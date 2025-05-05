@@ -1,5 +1,4 @@
 use dirs::config_dir;
-use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -9,9 +8,15 @@ use std::io::{self};
 use time::macros::format_description;
 use time::OffsetDateTime;
 use toml::{Table, Value};
+
+#[cfg(feature = "extension-module")]
+use pyo3::prelude::*;
+#[cfg(feature = "extension-module")]
+use pyo3::prelude::{IntoPy, PyObject, Python};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Configuration {
     pub email_server: Option<EmailServer>,
+    pub interpreter: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -77,6 +82,7 @@ pub enum MeasurementData {
     Single(Vec<f64>),
     Multi(Vec<Vec<f64>>),
 }
+#[cfg(feature = "extension-module")]
 impl IntoPy<PyObject> for MeasurementData {
     fn into_py(self, py: Python<'_>) -> PyObject {
         match self {
@@ -458,7 +464,7 @@ pub fn create_time_stamp(header: bool) -> String {
     now.format(&format_file).unwrap()
 }
 
-#[pyfunction]
+#[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
 pub fn load_experimental_data(filename: &str) -> HashMap<String, HashMap<String, MeasurementData>> {
     let content = fs::read_to_string(filename).expect("Failed to read the TOML file");
     let toml_data: Value = content.parse().expect("Failed to parse the TOML file");
@@ -520,12 +526,12 @@ fn div_ceil(a: usize, b: usize) -> usize {
 pub fn get_configuration() -> Result<Configuration, String> {
     let config_path = config_dir()
         .map(|mut path| {
-            path.push("pyfex");
+            path.push("rex");
             path.push("config.toml");
             path
         })
-        .ok_or("Failed to get config directory, setup your config directory then run pyfex");
-
+        .ok_or("Failed to get config directory, setup your config directory then run rex");
+    log::warn!("this is the config path {:?}", config_path);
     let conf = match config_path {
         Ok(path) => path,
         Err(res) => {

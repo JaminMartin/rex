@@ -1,4 +1,4 @@
-use crate::data_handler::{create_time_stamp, ServerState};
+use crate::data_handler::{create_time_stamp, get_configuration, ServerState};
 use crate::mail_handler::mailer;
 use crate::tcp_handler::{save_state, server_status, start_tcp_server};
 use crate::tui_tool::run_tui;
@@ -6,7 +6,6 @@ use clap::Parser;
 use crossbeam::channel;
 use env_logger::{Builder, Target};
 use log::LevelFilter;
-use pyo3::prelude::*;
 use std::env;
 use std::fmt::Debug;
 use std::io;
@@ -22,6 +21,10 @@ use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
+
+#[cfg(feature = "extension-module")]
+use pyo3::prelude::*;
+
 /// A commandline experiment manager for SPCS-Instruments
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -63,14 +66,20 @@ struct StandaloneArgs {
     verbosity: u8,
 }
 
-#[pyfunction]
-pub fn cli_parser() {
+#[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
+pub fn cli_parser_py() {
+    let (shutdown_tx, _) = broadcast::channel(1);
+
+    cli_parser_core(shutdown_tx);
+}
+
+pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
     let original_args: Vec<String> = std::env::args().collect();
 
-    let (mut cleaned_args, python_path_str) = process_args(original_args);
+    let mut cleaned_args = process_args(original_args.clone());
 
     if let Some(first_arg_index) = cleaned_args.iter().position(|arg| !arg.starts_with('-')) {
-        cleaned_args[first_arg_index] = "pfx".to_string();
+        cleaned_args[first_arg_index] = "rex".to_string();
     }
 
     let args = Args::parse_from(cleaned_args);
@@ -92,9 +101,18 @@ pub fn cli_parser() {
             .format_timestamp_secs();
         builder.init();
     };
-
+    log::warn!("original args {:?}:", original_args);
     log::info!(target: "pfx", "Experiment starting in {} s", args.delay * 60);
     sleep(Duration::from_secs(&args.delay * 60));
+    let python_path_str = match get_configuration() {
+        Ok(conf) => match conf.interpreter {
+            interpreter => interpreter,
+        },
+        Err(e) => {
+            log::error!("failed to get configuration due to: {}", e);
+            return;
+        }
+    };
 
     let python_path = Arc::new(python_path_str);
     let script_path = Arc::new(args.path);
@@ -107,7 +125,7 @@ pub fn cli_parser() {
             log::info!("Server is starting...");
             let (tx, rx) = channel::unbounded();
             let state = Arc::new(Mutex::new(ServerState::new()));
-            let (shutdown_tx, _) = broadcast::channel(1);
+            // let (shutdown_tx, _) = broadcast::channel(1);
             let shutdown_rx_tcp = shutdown_tx.subscribe();
             let shutdown_rx_server_satus = shutdown_tx.subscribe();
             let shutdown_rx_logger = shutdown_tx.subscribe();
@@ -412,13 +430,14 @@ async fn start_python_process_async(
     Ok(())
 }
 
-#[pyfunction]
+#[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
 pub fn cli_standalone() {
     let original_args: Vec<String> = std::env::args().collect();
     //let args = Args::parse_from(original_args);
-    let (mut cleaned_args, _) = process_args(original_args);
+    let mut cleaned_args = process_args(original_args);
+
     if let Some(first_arg_index) = cleaned_args.iter().position(|arg| !arg.starts_with('-')) {
-        cleaned_args[first_arg_index] = "pfxs".to_string();
+        cleaned_args[first_arg_index] = "rex".to_string();
     }
     let args = StandaloneArgs::parse_from(cleaned_args);
 
@@ -467,43 +486,11 @@ pub fn cli_standalone() {
     };
 }
 
-fn process_args(original_args: Vec<String>) -> (Vec<String>, String) {
-    let split_point = ".rye";
-    let corrected_win_path = "\\tools\\spcs-instruments\\Scripts\\python.exe";
-    let mut corrected_paths = Vec::new();
-
-    let python_path: Option<String> = match env::consts::OS {
-        "windows" => {
-            let original_path = original_args.iter().find(|arg| arg.contains("python"));
-
-            match original_path {
-                Some(original_path) => {
-                    let split_path: Vec<&str> = original_path.split(split_point).collect();
-                    match split_path.first() {
-                        Some(first_part) => {
-                            let corrected_path =
-                                format!("{}{}{}", first_part, split_point, corrected_win_path);
-
-                            corrected_paths.push(corrected_path.clone());
-                            Some(corrected_path)
-                        }
-                        None => None,
-                    }
-                }
-                None => None,
-            }
-        }
-        _ => original_args
-            .iter()
-            .find(|arg| arg.contains("python"))
-            .cloned(),
-    };
-
-    let python_path_str = python_path.unwrap_or_else(|| "".to_string());
-
+fn process_args(original_args: Vec<String>) -> Vec<String> {
     let cleaned_args = original_args
         .into_iter()
         .filter(|arg| !arg.contains("python"))
         .collect();
-    (cleaned_args, python_path_str)
+    log::warn!("cleaned args: {:?}", cleaned_args);
+    cleaned_args
 }

@@ -1,0 +1,7 @@
+[package]
+name = "rex-cli"
+edition = "2021"
+
+[dependencies]
+rex-core = { path = "../core", default-features = false }
+tokio = { version = "1.41.1", features = ["full"] }

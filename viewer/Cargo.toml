@@ -1,0 +1,6 @@
+[package]
+name = "rex-viewer"
+edition = "2021"
+
+[dependencies]
+rex-core = { path = "../core", default-features = false }

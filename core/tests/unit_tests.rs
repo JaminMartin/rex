@@ -2,8 +2,8 @@
 
 use crossbeam::channel;
 use regex::Regex;
-use spcs_rust_utils::data_handler::*;
-use spcs_rust_utils::tcp_handler::*;
+use rex_core::data_handler::*;
+use rex_core::tcp_handler::*;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
