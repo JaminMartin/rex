@@ -1,7 +1,17 @@
 [package]
 name = "rex-cli"
 edition = "2021"
+description = "Experimental control and data viewer for scientific workflows"
+publish = false
 
 [dependencies]
 rex-core = { path = "../core", default-features = false }
 tokio = { version = "1.41.1", features = ["full"] }
+
+[[bin]]
+name = "rex"
+path = "src/bin/controller.rs"
+
+[[bin]]
+name = "rex-viewer"
+path = "src/bin/viewer.rs"

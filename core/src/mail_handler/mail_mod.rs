@@ -23,8 +23,8 @@ pub fn mailer(email_adr: Option<&String>, file_path: &String) {
         let content_type = ContentType::parse("text/plain").unwrap();
         let attachment = Attachment::new(filename.clone()).body(filebody, content_type);
         let email_builder = Message::builder()
-        .from(email_configuration.from_address.parse().unwrap())
-        .reply_to(email_configuration.from_address.parse().unwrap())
+            .from(email_configuration.from_address.parse().unwrap())
+            .reply_to(email_configuration.from_address.parse().unwrap())
             .to(email.parse().unwrap())
             .subject("Experiment Notification")
             .header(ContentType::TEXT_PLAIN)
@@ -41,14 +41,13 @@ pub fn mailer(email_adr: Option<&String>, file_path: &String) {
         let email = match email_builder {
             Ok(email) => email,
             Err(e) => {
-                eprintln!("Could not build email: {e:?}");
+                log::error!("Could not build email: {e:?}");
                 return;
             }
         };
 
         log::info!("{:?}", email_configuration.server);
         let mailer = match email_configuration.security {
-            
             false => SmtpTransport::builder_dangerous(email_configuration.server).build(),
             true => {
                 let creds = Credentials::new(
@@ -63,8 +62,8 @@ pub fn mailer(email_adr: Option<&String>, file_path: &String) {
         };
         // Send the email
         match mailer.send(&email) {
-            Ok(_) => println!("Email sent successfully!"),
-            Err(e) => eprintln!("Could not send email: {e:?}"),
+            Ok(_) => log::info!("Email sent successfully!"),
+            Err(e) => log::error!("Could not send email: {e:?}"),
         }
     }
 }

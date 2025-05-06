@@ -25,7 +25,7 @@ use tui_logger;
 #[cfg(feature = "extension-module")]
 use pyo3::prelude::*;
 
-/// A commandline experiment manager for SPCS-Instruments
+/// A commandline experiment manager
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -54,6 +54,7 @@ struct Args {
     #[arg(short, long)]
     interactive: bool,
 }
+/// A commandline experiment viewer
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct StandaloneArgs {
@@ -65,18 +66,18 @@ struct StandaloneArgs {
     #[arg(short, long, default_value_t = 2)]
     verbosity: u8,
 }
-
+// Wrapper for generating python bindings for rex for direct inclusion with other downstream packages.
 #[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
 pub fn cli_parser_py() {
     let (shutdown_tx, _) = broadcast::channel(1);
 
     cli_parser_core(shutdown_tx);
 }
-
+// Core CLI tool used for both rex adn rex-py
 pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
     let original_args: Vec<String> = std::env::args().collect();
 
-    let mut cleaned_args = process_args(original_args.clone());
+    let mut cleaned_args = process_args(original_args);
 
     if let Some(first_arg_index) = cleaned_args.iter().position(|arg| !arg.starts_with('-')) {
         cleaned_args[first_arg_index] = "rex".to_string();
@@ -101,8 +102,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             .format_timestamp_secs();
         builder.init();
     };
-    log::warn!("original args {:?}:", original_args);
-    log::info!(target: "pfx", "Experiment starting in {} s", args.delay * 60);
+    log::info!(target: "rex", "Experiment starting in {} s", args.delay * 60);
     sleep(Duration::from_secs(&args.delay * 60));
     let python_path_str = match get_configuration() {
         Ok(conf) => match conf.interpreter {
@@ -232,11 +232,11 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                         output_path_clone.as_ref(),
                     )) {
                         Ok(filename) => {
-                            log::info!("Dumper Thread completed successfully.");
+                            log::info!("Data storage thread completed successfully.");
                             Some(filename)
                         }
                         Err(e) => {
-                            log::error!("Dumper Thread encountered an error: {:?}", e);
+                            log::error!("Data storage thread encountered an error: {:?}", e);
                             None
                         }
                     }
@@ -437,7 +437,7 @@ pub fn cli_standalone() {
     let mut cleaned_args = process_args(original_args);
 
     if let Some(first_arg_index) = cleaned_args.iter().position(|arg| !arg.starts_with('-')) {
-        cleaned_args[first_arg_index] = "rex".to_string();
+        cleaned_args[first_arg_index] = "rex-viewer".to_string();
     }
     let args = StandaloneArgs::parse_from(cleaned_args);
 
@@ -487,6 +487,7 @@ pub fn cli_standalone() {
 }
 
 fn process_args(original_args: Vec<String>) -> Vec<String> {
+    //used for removing python inserted args when rex is invoked from a python script
     let cleaned_args = original_args
         .into_iter()
         .filter(|arg| !arg.contains("python"))
