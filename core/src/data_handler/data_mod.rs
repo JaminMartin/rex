@@ -10,8 +10,6 @@ use time::OffsetDateTime;
 use toml::{Table, Value};
 
 #[cfg(feature = "extension-module")]
-use pyo3::prelude::*;
-#[cfg(feature = "extension-module")]
 use pyo3::prelude::{IntoPy, PyObject, Python};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Configuration {
