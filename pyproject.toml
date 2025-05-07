@@ -13,3 +13,4 @@ build-backend = "maturin"
 [tool.maturin]
 features = ["extension-module"]
 module-name = "rex"
+manifest-path = "core/Cargo.toml"

@@ -73,4 +73,4 @@ Options:
 # Projects using Rex
 To get some ideas of how to use rex, check out these projects using it.
 
-- [spcs-instruments](https://github.com/JaminMartin/rex)
+- [spcs-instruments](https://github.com/JaminMartin/spcs_instruments/tree/master)
