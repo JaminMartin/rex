@@ -1,6 +1,6 @@
 [project]
 name = "rex-pycli"
-version = "0.9"
+version = "0.9.1"
 description = "Rex, a rust based data management tool"
 authors = [
     { name = "Jamin Martin"}
@@ -13,4 +13,3 @@ build-backend = "maturin"
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "rex"
-manifest-path = "core/Cargo.toml"

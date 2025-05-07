@@ -16,6 +16,11 @@ use pyo3::prelude::{IntoPy, PyObject, Python};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Configuration {
     pub email_server: Option<EmailServer>,
+    pub general: GeneralConfig,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GeneralConfig {
+    pub port: String,
     pub interpreter: String,
 }
 
@@ -531,7 +536,6 @@ pub fn get_configuration() -> Result<Configuration, String> {
             path
         })
         .ok_or("Failed to get config directory, setup your config directory then run rex");
-    log::warn!("this is the config path {:?}", config_path);
     let conf = match config_path {
         Ok(path) => path,
         Err(res) => {
@@ -541,8 +545,8 @@ pub fn get_configuration() -> Result<Configuration, String> {
     };
     let config_contents = fs::read_to_string(conf);
 
-    let contents: Configuration = match config_contents {
-        Ok(contents) => toml::from_str(&contents).expect("Unable to parse config.toml"),
+    let contents = match config_contents {
+        Ok(contents) => toml::from_str(&contents),
         Err(e) => {
             log::error!(
                 "Could not read config.toml file, raised the following error: {}",
@@ -551,6 +555,17 @@ pub fn get_configuration() -> Result<Configuration, String> {
             return Err(e.to_string());
         }
     };
-    log::debug!("{:?}", contents);
-    Ok(contents)
+    let rex_configuration: Configuration = match contents {
+        Ok(config) => config,
+        Err(e) => {
+            log::error!(
+                "Could not read config.toml file, raised the following error: {}",
+                e
+            );
+
+            return Err(e.to_string());
+        }
+    };
+    log::debug!("{:?}", rex_configuration);
+    Ok(rex_configuration)
 }

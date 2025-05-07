@@ -1,4 +1,4 @@
-use crate::data_handler::{sanitize_filename, Device, Entity, Experiment, ServerState, Listner};
+use crate::data_handler::{sanitize_filename, Device, Entity, Experiment, Listner, ServerState};
 use crossbeam::channel::Sender;
 use std::io;
 use std::net::SocketAddr;
@@ -10,15 +10,14 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 
-
 pub async fn start_tcp_server(
     tx: Sender<String>,
-    addr: &str,
+    addr: String,
     state: Arc<Mutex<ServerState>>,
     mut shutdown_rx: broadcast::Receiver<()>,
-    shutdown_tx: broadcast::Sender<()>
+    shutdown_tx: broadcast::Sender<()>,
 ) -> tokio::io::Result<()> {
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(addr.clone()).await?;
     log::info!("TCP server listening on {}", addr);
 
     loop {
@@ -48,7 +47,7 @@ async fn handle_connection(
     addr: SocketAddr,
     tx: Sender<String>,
     state: Arc<Mutex<ServerState>>,
-    shutdown_tx: broadcast::Sender<()>
+    shutdown_tx: broadcast::Sender<()>,
 ) {
     let (reader, mut writer) = socket.into_split();
     let mut reader = BufReader::new(reader);
@@ -67,7 +66,7 @@ async fn handle_connection(
                     continue;
                 }
                 match trimmed {
-                "GET_DATASTREAM" => {
+                    "GET_DATASTREAM" => {
                         let state = state.lock().await;
                         let steam_data = state.send_stream();
                         match serde_json::to_string(&steam_data) {
@@ -94,52 +93,50 @@ async fn handle_connection(
                         }
                     }
 
-                "PAUSE_STATE" => {
-                    if let Err(e) = writer
-                                    .write_all(format!("Setting internal server state to paused...\n").as_bytes())
-                                    .await
-                                    
-                                {
-                                    log::error!("Failed to send server state: {}", e);
-                                    break;
-                                }
-                                let mut state = state.lock().await; 
-                                state.internal_state = false;
-                                log::info!("setting server state to paused....");
-                                continue;   
-                            }
+                    "PAUSE_STATE" => {
+                        if let Err(e) = writer
+                            .write_all(
+                                format!("Setting internal server state to paused...\n").as_bytes(),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to send server state: {}", e);
+                            break;
+                        }
+                        let mut state = state.lock().await;
+                        state.internal_state = false;
+                        log::info!("setting server state to paused....");
+                        continue;
+                    }
 
-                "KILL" => {
-                    if let Err(e) = writer
-                                    .write_all(format!("Shutting down server...\n").as_bytes())
-                                    .await
-                                    
-                                    //kill the process
-                                {
-                                    log::error!("Failed to send server state: {}", e);
-                                    break;
-                                }
-                                log::info!("Recieved remote termination command, shutting down server"); 
-                                let _ = shutdown_tx.send(());
-                                break   
-                            } 
-                "RESUME_STATE" => {
-                    if let Err(e) = writer
-                                    .write_all(format!("Setting internal server state to start...\n").as_bytes())
-                                    .await
-                                {
-                                    log::error!("Failed to send server state: {}", e);
-                                    break;
-                                }
-                                let mut state = state.lock().await; 
-                                state.internal_state = true;
-                                continue;   
-                                
-                            }            
-                _ => {}    
-
-
-
+                    "KILL" => {
+                        if let Err(e) = writer
+                            .write_all(format!("Shutting down server...\n").as_bytes())
+                            .await
+                        //kill the process
+                        {
+                            log::error!("Failed to send server state: {}", e);
+                            break;
+                        }
+                        log::info!("Recieved remote termination command, shutting down server");
+                        let _ = shutdown_tx.send(());
+                        break;
+                    }
+                    "RESUME_STATE" => {
+                        if let Err(e) = writer
+                            .write_all(
+                                format!("Setting internal server state to start...\n").as_bytes(),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to send server state: {}", e);
+                            break;
+                        }
+                        let mut state = state.lock().await;
+                        state.internal_state = true;
+                        continue;
+                    }
+                    _ => {}
                 }
 
                 match serde_json::from_str::<Device>(trimmed) {
@@ -184,37 +181,28 @@ async fn handle_connection(
                                 let state = state.lock().await;
                                 if tx.send(trimmed.to_string()).is_err() {
                                     log::error!("Failed to send message through channel");
-                                }   
+                                }
                                 if state.internal_state == true {
-                                    if let Err(e) = writer
-                                    .write_all(b"Running\n")
-                                    .await
-                                {
-                                    log::error!("Failed to send acknowledgment: {}", e);
-                                    break;
-                                }
+                                    if let Err(e) = writer.write_all(b"Running\n").await {
+                                        log::error!("Failed to send acknowledgment: {}", e);
+                                        break;
+                                    }
                                 } else {
-
-                                    if let Err(e) = writer
-                                    .write_all(b"Paused\n")
-                                    .await
-                                {
-                                    log::error!("Failed to send acknowledgment: {}", e);
-                                    break;
-                                }
-
+                                    if let Err(e) = writer.write_all(b"Paused\n").await {
+                                        log::error!("Failed to send acknowledgment: {}", e);
+                                        break;
+                                    }
                                 }
                             }
                             Err(e) => {
-                            log::error!("Failed to parse device or experiment data: {}", e);
-                            let error_msg = format!("Invalid format: {}\n", e);
-                            if let Err(e) = writer.write_all(error_msg.as_bytes()).await {
-                                log::error!("Failed to send error message: {}", e);
-                                break;
+                                log::error!("Failed to parse device or experiment data: {}", e);
+                                let error_msg = format!("Invalid format: {}\n", e);
+                                if let Err(e) = writer.write_all(error_msg.as_bytes()).await {
+                                    log::error!("Failed to send error message: {}", e);
+                                    break;
+                                }
                             }
-                        }
-                        }
-   
+                        },
                     },
                 }
             }

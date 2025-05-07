@@ -22,8 +22,6 @@ use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
 
-#[cfg(feature = "extension-module")]
-use pyo3::prelude::*;
 
 /// A commandline experiment manager
 #[derive(Parser, Debug)]
@@ -105,7 +103,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
     log::info!(target: "rex", "Experiment starting in {} s", args.delay * 60);
     sleep(Duration::from_secs(&args.delay * 60));
     let python_path_str = match get_configuration() {
-        Ok(conf) => match conf.interpreter {
+        Ok(conf) => match conf.general.interpreter {
             interpreter => interpreter,
         },
         Err(e) => {
@@ -156,7 +154,17 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 None
             };
             let tcp_server_thread = thread::spawn(move || {
-                let addr = "127.0.0.1:7676";
+                let port = match get_configuration() {
+                    Ok(conf) => match conf.general.port {
+                        interpreter => interpreter,
+                    },
+                    Err(e) => {
+                        log::error!("failed to get configuration due to: {}", e);
+                        return;
+                    }
+                };
+
+                let addr = format!("127.0.0.1:{port}", port = port);
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
