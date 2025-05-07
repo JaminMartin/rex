@@ -1,5 +1,5 @@
 [project]
-name = "rex-py"
+name = "rex-pycli"
 version = "0.9"
 description = "Rex, a rust based data management tool"
 authors = [
