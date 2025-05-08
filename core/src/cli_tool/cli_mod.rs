@@ -22,7 +22,6 @@ use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
 
-
 /// A commandline experiment manager
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -102,7 +101,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
     };
     log::info!(target: "rex", "Experiment starting in {} s", args.delay * 60);
     sleep(Duration::from_secs(&args.delay * 60));
-    let python_path_str = match get_configuration() {
+    let interpreter_path_str = match get_configuration() {
         Ok(conf) => match conf.general.interpreter {
             interpreter => interpreter,
         },
@@ -112,13 +111,13 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
         }
     };
 
-    let python_path = Arc::new(python_path_str);
+    let interpreter_path = Arc::new(interpreter_path_str);
     let script_path = Arc::new(args.path);
-    let python_path_loop = Arc::clone(&python_path);
+    let interpreter_path_loop = Arc::clone(&interpreter_path);
     let output_path = Arc::new(args.output);
-    if !python_path_loop.is_empty() {
+    if !interpreter_path_loop.is_empty() {
         for _ in 0..args.loops {
-            let python_path_clone = Arc::clone(&python_path);
+            let interpreter_path_clone = Arc::clone(&interpreter_path);
             let script_path_clone = Arc::clone(&script_path);
             log::info!("Server is starting...");
             let (tx, rx) = channel::unbounded();
@@ -127,8 +126,8 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             let shutdown_rx_tcp = shutdown_tx.subscribe();
             let shutdown_rx_server_satus = shutdown_tx.subscribe();
             let shutdown_rx_logger = shutdown_tx.subscribe();
-            let shutdown_rx_python = shutdown_tx.subscribe();
-            let shutdown_tx_clone_python = shutdown_tx.clone();
+            let shutdown_rx_interpreter = shutdown_tx.subscribe();
+            let shutdown_tx_clone_interpreter = shutdown_tx.clone();
             let shutdown_tx_clone_tcp = shutdown_tx.clone();
 
             let tcp_state = Arc::clone(&state);
@@ -182,7 +181,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 .unwrap();
             });
 
-            let python_thread = thread::spawn(move || {
+            let interpreter_thread = thread::spawn(move || {
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
@@ -191,16 +190,16 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     }
                 };
 
-                if let Err(e) = rt.block_on(start_python_process_async(
-                    python_path_clone,
+                if let Err(e) = rt.block_on(start_interpreter_process_async(
+                    interpreter_path_clone,
                     script_path_clone,
                     log_level,
-                    shutdown_rx_python,
+                    shutdown_rx_interpreter,
                 )) {
                     log::error!("Python process failed: {:?}", e);
                 }
 
-                if let Err(e) = shutdown_tx_clone_python.send(()) {
+                if let Err(e) = shutdown_tx_clone_interpreter.send(()) {
                     log::error!("Failed to send shutdown signal: {:?}", e);
                 }
             });
@@ -272,7 +271,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 log::debug!("Received data: {}", received);
             }
             let tcp_server_result = tcp_server_thread.join();
-            let python_thread_result = python_thread.join();
+            let interpreter_thread_result = interpreter_thread.join();
             let printer_result = printer_thread.join();
             let dumper_result = match dumper {
                 Some(dumper_thread) => match dumper_thread.join() {
@@ -311,7 +310,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
 
             let results = [
                 ("TCP Server Thread", tcp_server_result),
-                ("Python Process Thread", python_thread_result),
+                ("Interpreter Process Thread", interpreter_thread_result),
                 ("Printer Thread", printer_result),
             ];
 
@@ -341,7 +340,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     return;
                 }
             };
-            log::info!(target: "pfx", "The output file directory is: {}", output_path);
+            log::info!("The output file directory is: {}", output_path);
             mailer(args.email.as_ref(), &output_file);
         }
     } else {
@@ -357,8 +356,8 @@ fn get_current_dir() -> String {
         .to_string()
 }
 
-async fn start_python_process_async(
-    python_path: Arc<String>,
+async fn start_interpreter_process_async(
+    interpreter_path: Arc<String>,
     script_path: Arc<PathBuf>,
     log_level: LevelFilter,
     mut shutdown_rx: broadcast::Receiver<()>,
@@ -372,19 +371,28 @@ async fn start_python_process_async(
         LevelFilter::Off => "ERROR",
     };
 
-    let mut python_process = TokioCommand::new(python_path.as_ref())
+    let script_extension = script_path
+        .as_ref()
+        .extension()
+        .and_then(|ext| ext.to_str());
+    let optional_args = match script_extension {
+        Some("py") => vec!["-u"],
+        _ => vec![],
+    };
+
+    let mut interpreter_process = TokioCommand::new(interpreter_path.as_ref())
         .env("RUST_LOG_LEVEL", level_str)
-        .arg("-u")
+        .args(&optional_args)
         .arg(script_path.as_ref())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
 
-    let stdout = python_process
+    let stdout = interpreter_process
         .stdout
         .take()
         .expect("Failed to capture stdout");
-    let stderr = python_process
+    let stderr = interpreter_process
         .stderr
         .take()
         .expect("Failed to capture stderr");
@@ -396,14 +404,14 @@ async fn start_python_process_async(
     let stdout_task = task::spawn(async move {
         let mut lines = stdout_reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            log::debug!(target: "Python", "{}", line);
+            log::debug!(target: "Interpreter", "{}", line);
         }
     });
 
     let stderr_task = task::spawn(async move {
         let mut in_traceback = false;
         let mut lines = stderr_reader.lines();
-
+        // some python specific error logging (first class support)
         while let Ok(Some(line)) = lines.next_line().await {
             if line.starts_with("Traceback (most recent call last):") {
                 in_traceback = true;
@@ -422,14 +430,14 @@ async fn start_python_process_async(
     });
     tokio::select! {
         _ = shutdown_rx.recv() => {
-            log::warn!("Received shutdown signal, terminating Python process...");
-            if let Some(id) = python_process.id() {
-                let _ = python_process.kill().await;
-                log::info!("Python process (PID: {}) terminated", id);
+            log::warn!("Received shutdown signal, terminating interpreter process...");
+            if let Some(id) = interpreter_process.id() {
+                let _ = interpreter_process.kill().await;
+                log::info!("Interpreter process (PID: {}) terminated", id);
             }
         }
-        status = python_process.wait() => {
-            log::info!("Python process exited with status: {:?}", status);
+        status = interpreter_process.wait() => {
+            log::info!("Interpreter process exited with status: {:?}", status);
         }
     }
     // Wait for both stdout and stderr tasks to complete

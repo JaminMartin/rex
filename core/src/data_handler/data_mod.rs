@@ -527,6 +527,7 @@ fn div_ceil(a: usize, b: usize) -> usize {
 }
 
 pub fn get_configuration() -> Result<Configuration, String> {
+    // #[cfg(any(target_os = "windows", target_os = "linux"))]
     let config_path = config_dir()
         .map(|mut path| {
             path.push("rex");
@@ -534,6 +535,10 @@ pub fn get_configuration() -> Result<Configuration, String> {
             path
         })
         .ok_or("Failed to get config directory, setup your config directory then run rex");
+
+    // #[cfg(target_os = "macos")]
+    // let config_path = ..join(".config").join("rex").into();
+
     let conf = match config_path {
         Ok(path) => path,
         Err(res) => {
@@ -541,6 +546,8 @@ pub fn get_configuration() -> Result<Configuration, String> {
             return Err(res.to_string());
         }
     };
+
+    log::warn!("{:?}", conf.clone().to_str());
     let config_contents = fs::read_to_string(conf);
 
     let contents = match config_contents {
