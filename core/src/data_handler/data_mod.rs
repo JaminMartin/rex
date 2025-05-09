@@ -1,10 +1,10 @@
-use dirs::config_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self};
+use std::path::PathBuf;
 use time::macros::format_description;
 use time::OffsetDateTime;
 use toml::{Table, Value};
@@ -527,18 +527,13 @@ fn div_ceil(a: usize, b: usize) -> usize {
 }
 
 pub fn get_configuration() -> Result<Configuration, String> {
-    // #[cfg(any(target_os = "windows", target_os = "linux"))]
-    let config_path = config_dir()
+    let config_path = configurable_dir_path("XDG_CONFIG_HOME", dirs::config_dir)
         .map(|mut path| {
             path.push("rex");
             path.push("config.toml");
             path
         })
         .ok_or("Failed to get config directory, setup your config directory then run rex");
-
-    // #[cfg(target_os = "macos")]
-    // let config_path = ..join(".config").join("rex").into();
-
     let conf = match config_path {
         Ok(path) => path,
         Err(res) => {
@@ -546,8 +541,6 @@ pub fn get_configuration() -> Result<Configuration, String> {
             return Err(res.to_string());
         }
     };
-
-    log::warn!("{:?}", conf.clone().to_str());
     let config_contents = fs::read_to_string(conf);
 
     let contents = match config_contents {
@@ -573,4 +566,15 @@ pub fn get_configuration() -> Result<Configuration, String> {
     };
     log::debug!("{:?}", rex_configuration);
     Ok(rex_configuration)
+}
+
+// allow for XDG_CONFIG_HOME env to allow MacOS users to have
+pub fn configurable_dir_path(
+    env_var: &str,
+    dir: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    std::env::var(env_var)
+        .ok()
+        .and_then(|path| PathBuf::try_from(path).ok())
+        .or_else(|| dir())
 }
