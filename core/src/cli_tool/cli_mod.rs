@@ -1,6 +1,6 @@
 use crate::data_handler::{create_time_stamp, get_configuration, ServerState};
 use crate::mail_handler::mailer;
-use crate::tcp_handler::{save_state, server_status, start_tcp_server};
+use crate::tcp_handler::{save_state, send_to_clickhouse, server_status, start_tcp_server};
 use crate::tui_tool::run_tui;
 use clap::Parser;
 use crossbeam::channel;
@@ -132,6 +132,8 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
 
             let tcp_state = Arc::clone(&state);
             let server_state = Arc::clone(&state);
+            let server_state_ch = Arc::clone(&state);
+
             let tcp_tx = tx.clone();
 
             let tui_thread = if args.interactive {
@@ -340,6 +342,26 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     return;
                 }
             };
+            let clickhouse_thread = thread::spawn(move || {
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        log::error!("Error in thread: {:?}", e);
+                        return;
+                    }
+                };
+
+                rt.block_on(send_to_clickhouse(server_state_ch)).unwrap();
+            });
+            let clickhouse_result = clickhouse_thread.join();
+            match clickhouse_result {
+                Ok(res) => {}
+                Err(e) => log::error!(
+                    "{:?}
+                    ",
+                    e
+                ),
+            }
             log::info!("The output file directory is: {}", output_path);
             mailer(args.email.as_ref(), &output_file);
         }

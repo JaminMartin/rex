@@ -1,3 +1,6 @@
+use clickhouse::Row;
+#[cfg(feature = "extension-module")]
+use pyo3::prelude::{IntoPy, PyObject, Python};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -5,12 +8,38 @@ use std::env;
 use std::fs;
 use std::io::{self};
 use std::path::PathBuf;
+use time::error::Parse;
 use time::macros::format_description;
 use time::OffsetDateTime;
 use toml::{Table, Value};
+use uuid::Uuid;
 
-#[cfg(feature = "extension-module")]
-use pyo3::prelude::{IntoPy, PyObject, Python};
+#[derive(Debug, Row, Serialize)]
+pub struct ExperimentClickhouse {
+    #[serde(with = "clickhouse::serde::uuid")]
+    experiment_id: Uuid,
+    start_time: String,
+    end_time: String,
+    name: String,
+    email: String,
+    experiment_name: String,
+    experiment_description: String,
+}
+
+#[derive(Debug, Row, Clone, Serialize)]
+pub struct ClickhouseMeasurementPrimative {
+    #[serde(with = "clickhouse::serde::uuid")]
+    experiment_id: Uuid,
+    device_name: String,
+    channel_name: String,
+    sample_index: u32,
+    value: f64,
+}
+
+pub struct ClickhouseMeasurements {
+    pub measurements: Vec<ClickhouseMeasurementPrimative>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Configuration {
     pub email_server: Option<EmailServer>,
@@ -60,6 +89,33 @@ impl Experiment {
     }
     fn append_end_time(&mut self) {
         self.end_time = Some(create_time_stamp(false));
+    }
+
+    pub fn to_clickhouse(&self, id: Uuid) -> Option<ExperimentClickhouse> {
+        let start_time = self.start_time.as_ref()?;
+        let end_time = self.start_time.as_ref()?;
+
+        // This is currently buggy.
+        // let time_start = match custom_to_standard(&start_time, false) {
+        //     Ok(ts) => ts,
+        //     Err(_) => return None,
+        // };
+
+        // let time_end = match custom_to_standard(&end_time, false) {
+        //     Ok(ts) => ts,
+        //     Err(_) => return None,
+        // };
+
+        let exp = ExperimentClickhouse {
+            experiment_id: id,
+            start_time: start_time.clone(),
+            end_time: end_time.clone(),
+            name: self.info.name.clone(),
+            email: self.info.email.clone(),
+            experiment_name: self.info.experiment_name.clone(),
+            experiment_description: self.info.experiment_description.clone(),
+        };
+        Some(exp)
     }
 }
 impl Default for Experiment {
@@ -189,6 +245,39 @@ impl Device {
                     }
                 }
             });
+    }
+    pub fn to_clickhouse(&self, id: Uuid) -> Option<ClickhouseMeasurements> {
+        let measurements = self
+            .measurements
+            .iter()
+            .flat_map(|(channel_name, values)| match values {
+                MeasurementData::Single(single_values) => single_values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| ClickhouseMeasurementPrimative {
+                        experiment_id: id,
+                        device_name: self.device_name.clone(),
+                        channel_name: channel_name.clone(),
+                        sample_index: i as u32,
+                        value: v,
+                    })
+                    .collect::<Vec<_>>(),
+                // These are a todo and need to decide how to structure coresponding db
+                MeasurementData::Multi(_) => vec![122.123, 13123.123, 131313.13132]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| ClickhouseMeasurementPrimative {
+                        experiment_id: id,
+                        device_name: "dummy".to_string(),
+                        channel_name: "voltage".to_string(),
+                        sample_index: i as u32,
+                        value: v,
+                    })
+                    .collect::<Vec<_>>(),
+            })
+            .collect();
+
+        Some(ClickhouseMeasurements { measurements })
     }
 }
 
@@ -411,6 +500,33 @@ impl ServerState {
             }
         })
     }
+    pub fn experiment_data_ch(&self, id: Uuid) -> Option<ExperimentClickhouse> {
+        self.entities.values().find_map(|entity| {
+            if let Entity::ExperimentSetup(experiment) = entity {
+                experiment.to_clickhouse(id)
+            } else {
+                None
+            }
+        })
+    }
+    pub fn device_data_ch(&self, id: Uuid) -> Option<Vec<ClickhouseMeasurements>> {
+        let device_data: Vec<ClickhouseMeasurements> = self
+            .entities
+            .values()
+            .filter_map(|entity| {
+                if let Entity::Device(device) = entity {
+                    device.to_clickhouse(id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if device_data.is_empty() {
+            None
+        } else {
+            Some(device_data)
+        }
+    }
     pub fn validate(&self) -> io::Result<()> {
         log::trace!("Validating state, entities: {:?}", self.entities);
 
@@ -453,6 +569,29 @@ pub fn sanitize_filename(name: String) -> String {
     name.replace([' ', '/'], "_")
 }
 
+pub fn parse_custom_timestamp(
+    timestamp: &str,
+    is_header_format: bool,
+) -> Result<OffsetDateTime, Parse> {
+    // Choose the format based on whether it uses dashes or underscores
+    let format = if is_header_format {
+        format_description!(
+            "[day]_[month]_[year]_[hour repr:24]_[minute]_[second]_[subsecond digits:3]"
+        )
+    } else {
+        format_description!(
+            "[day]-[month]-[year] [hour repr:24]:[minute]:[second].[subsecond digits:3]"
+        )
+    };
+    OffsetDateTime::parse(timestamp, &format)
+}
+
+pub fn custom_to_standard(timestamp: &str, is_header_format: bool) -> Result<String, Parse> {
+    let dt = parse_custom_timestamp(timestamp, is_header_format)?;
+    Ok(dt
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap())
+}
 pub fn create_time_stamp(header: bool) -> String {
     let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
     let format_file = match header {
