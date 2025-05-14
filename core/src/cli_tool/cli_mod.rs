@@ -15,13 +15,13 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
+//use time::format_description::well_known::iso8601::Config;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
-
 /// A commandline experiment manager
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -291,24 +291,6 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 },
                 None => None,
             };
-            match tui_thread {
-                Some(tui_result) => {
-                    let result = tui_result.join();
-                    match result {
-                        Ok(_) => log::info!("Tui hread shutdown successfully."),
-                        Err(e) => {
-                            if let Some(err) = e.downcast_ref::<String>() {
-                                log::error!("Tui thread encountered an error: {}", err);
-                            } else if let Some(err) = e.downcast_ref::<&str>() {
-                                log::error!("Tui thread encountered an error: {}", err);
-                            } else {
-                                log::error!("Tui thread encountered an unknown error.");
-                            }
-                        }
-                    }
-                }
-                None => {}
-            };
 
             let results = [
                 ("TCP Server Thread", tcp_server_result),
@@ -342,31 +324,66 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     return;
                 }
             };
-            let clickhouse_thread = thread::spawn(move || {
-                let rt = match tokio::runtime::Runtime::new() {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        log::error!("Error in thread: {:?}", e);
-                        return;
-                    }
-                };
+            let mut clickhouse_thread = None;
+            if let Ok(config) = get_configuration() {
+                if let Some(clickhouse_config) = config.click_house_server {
+                    if !args.dry_run {
+                        let handle = thread::spawn(move || {
+                            let rt = match tokio::runtime::Runtime::new() {
+                                Ok(rt) => rt,
+                                Err(e) => {
+                                    log::error!("Error in thread: {:?}", e);
+                                    return;
+                                }
+                            };
 
-                rt.block_on(send_to_clickhouse(server_state_ch)).unwrap();
-            });
-            let clickhouse_result = clickhouse_thread.join();
-            match clickhouse_result {
-                Ok(res) => {}
-                Err(e) => log::error!(
-                    "{:?}
-                    ",
-                    e
-                ),
-            }
+                            rt.block_on(send_to_clickhouse(server_state_ch, clickhouse_config))
+                                .unwrap();
+                        });
+                        clickhouse_thread = Some(handle);
+                    } else {
+                    };
+                } else {
+                    log::error!("Failed to get Clickhouse config, data will not be logged to clickhouse, however it will be logged locally");
+                }
+            } else {
+                log::error!("Failed to get configuration.");
+            };
+            match clickhouse_thread {
+                Some(tcp_handle) => {
+                    let handle = tcp_handle.join();
+                    match handle {
+                        Ok(_) => log::info!("Clickhouse process shutdown sucessfully"),
+                        Err(e) => log::error!("Error in thread {:?}", e),
+                    }
+                }
+                None => {}
+            };
+
             log::info!("The output file directory is: {}", output_path);
             mailer(args.email.as_ref(), &output_file);
+
+            match tui_thread {
+                Some(tui_result) => {
+                    let result = tui_result.join();
+                    match result {
+                        Ok(_) => log::info!("Tui hread shutdown successfully."),
+                        Err(e) => {
+                            if let Some(err) = e.downcast_ref::<String>() {
+                                log::error!("Tui thread encountered an error: {}", err);
+                            } else if let Some(err) = e.downcast_ref::<&str>() {
+                                log::error!("Tui thread encountered an error: {}", err);
+                            } else {
+                                log::error!("Tui thread encountered an unknown error.");
+                            }
+                        }
+                    }
+                }
+                None => {}
+            };
         }
     } else {
-        log::error!(target: "pfx","No interpreter path found in the arguments");
+        log::error!("No interpreter path found in the arguments");
     }
 }
 

@@ -43,6 +43,7 @@ pub struct ClickhouseMeasurements {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Configuration {
     pub email_server: Option<EmailServer>,
+    pub click_house_server: Option<ClickhouseServer>,
     pub general: GeneralConfig,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,6 +61,17 @@ pub struct EmailServer {
     pub port: Option<String>,
     pub from_address: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClickhouseServer {
+    pub server: String,
+    pub port: String,
+    pub database: String,
+    pub username: String,
+    pub password: String,
+    pub measurement_table: String,
+    pub experiment_meta_table: String,
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Entity {
     Device(Device),
@@ -76,14 +88,16 @@ pub struct Listner {
 pub struct Experiment {
     pub start_time: Option<String>,
     pub end_time: Option<String>,
+    pub uuid: Option<Uuid>,
     pub info: ExperimentInfo,
 }
 
 impl Experiment {
-    pub fn new(info: ExperimentInfo) -> Self {
+    pub fn new(info: ExperimentInfo, uuid: Uuid) -> Self {
         Experiment {
             start_time: Some(create_time_stamp(false)),
             end_time: None,
+            uuid: Some(uuid),
             info,
         }
     }
@@ -123,6 +137,7 @@ impl Default for Experiment {
         Experiment {
             start_time: Some(create_time_stamp(false)),
             end_time: None,
+            uuid: None,
             info: ExperimentInfo::default(),
         }
     }
@@ -286,6 +301,7 @@ pub struct ServerState {
     pub entities: HashMap<String, Entity>,
     pub internal_state: bool,
     pub retention: bool,
+    pub uuid: Uuid,
 }
 
 impl ServerState {
@@ -294,6 +310,7 @@ impl ServerState {
             entities: HashMap::new(),
             internal_state: true,
             retention: true,
+            uuid: Uuid::new_v4(),
         }
     }
 
@@ -311,7 +328,7 @@ impl ServerState {
             },
             Entity::ExperimentSetup(experiment_setup) => match self.entities.entry(key) {
                 Entry::Vacant(entry) => {
-                    let experiment = Experiment::new(experiment_setup.info);
+                    let experiment = Experiment::new(experiment_setup.info, self.uuid);
                     entry.insert(Entity::ExperimentSetup(experiment));
                 }
                 Entry::Occupied(_) => {
@@ -406,6 +423,15 @@ impl ServerState {
                     experiment_table.insert(
                         "end_time".to_string(),
                         Value::String(exeperimentsetup.end_time.clone().unwrap_or_default()),
+                    );
+
+                    experiment_table.insert(
+                        "UUID".to_string(),
+                        Value::String(
+                            exeperimentsetup
+                                .uuid
+                                .map_or(String::new(), |uuid| uuid.to_string()),
+                        ),
                     );
                     let mut experiment_config = Table::new();
 
