@@ -38,7 +38,7 @@ struct Args {
     /// Number of times to loop the experiment
     #[arg(short, long, default_value_t = 1)]
     loops: u8,
-    /// Path to the python file containing the experimental setup
+    /// Path to script containing the experimental setup / control flow
     #[arg(short, long)]
     path: PathBuf,
     /// Dry run, will not log data. Can be used for long term monitoring
