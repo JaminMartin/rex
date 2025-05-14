@@ -1,4 +1,7 @@
-use crate::data_handler::{sanitize_filename, Device, Entity, Experiment, Listner, ServerState};
+use crate::data_handler::{
+    sanitize_filename, ClickhouseServer, Device, Entity, Experiment, Listner, ServerState,
+};
+use clickhouse::Client;
 use crossbeam::channel::Sender;
 use std::io;
 use std::net::SocketAddr;
@@ -9,7 +12,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
-
 pub async fn start_tcp_server(
     tx: Sender<String>,
     addr: String,
@@ -303,4 +305,38 @@ fn format_file_path(output_path: &str, file_name: &str, file_suffix: &str) -> St
     let sanitized_output_path = clean_trailing_slash(output_path);
     let separator = MAIN_SEPARATOR;
     format!("{sanitized_output_path}{separator}{file_name}_{file_suffix}.toml")
+}
+
+pub async fn send_to_clickhouse(
+    state: Arc<Mutex<ServerState>>,
+    config: ClickhouseServer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::default()
+        .with_url(format!("{}:{}", config.server, config.port))
+        .with_database(config.database)
+        .with_user(config.username)
+        .with_password(config.password);
+    log::info!("Starting clickhouse Logging!");
+    {
+        let state = state.lock().await;
+        let exp_data = state
+            .experiment_data_ch(state.uuid)
+            .ok_or("No experiment data found")?;
+        let mut insert_exp = client.insert(&config.experiment_meta_table)?;
+
+        insert_exp.write(&exp_data).await?;
+        let _ = insert_exp.end().await?;
+        let mut insert_measure = client.insert(&config.measurement_table)?;
+        let device_data = state
+            .device_data_ch(state.uuid)
+            .ok_or("no device data found")?;
+        for chm in device_data {
+            for m in &chm.measurements {
+                insert_measure.write(m).await?;
+            }
+        }
+        let _ = insert_measure.end().await?;
+        log::info!("Completed Clickhouse logging!");
+        Ok(())
+    }
 }

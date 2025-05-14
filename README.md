@@ -9,7 +9,9 @@ Build deterministic experiment pipelines in the scripting language of your choic
 - Human readable data files that can be used to reproduce identical experiments. 
 - language agnostic, can in principle run and manage data from any scripting language that can send data in an appropriate form over TCP. 
     - First class support for python
-    - beta support for Matlab.
+    - beta support for rustscript
+    - alpha support for Matlab.
+
 - Supports sending results over email
 # Road Map
 - first class backend database & Grafana support    
@@ -54,7 +56,18 @@ from_address = "Rex <rex.experiment@rex.com>" # configurable from email
  
 username = "rex_user" # your email address
 password = "rex_admin" # your email password, if this is using google's smtp server - then it is your application password
+
+[click_house_server]
+server = "server_address"
+port = "clickhouse_http_port"
+password = "a_strong_password"
+username = "your_username"
+database = "default"
+measurement_table = "your_measurement_table"
+experiment_meta_table ="your_experiment_meta_data_table"
+
 ```
+Both the email service and database backend are optional and not required for regular use. Documentaion on how to setup the coresponding clickhousedb server is a work in progress.
 
 As rex provides either an interactive mode or logging mode, rex also bundles a seperate binary called rex-viewer. It is a interative mode only experience. It can be used to remotely kill or pause/continue scripts. Rex-viewer only accepts one argument which is the ip address and port of the instance currently running rex-cli.
 ```

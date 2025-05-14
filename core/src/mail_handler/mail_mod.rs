@@ -46,7 +46,7 @@ pub fn mailer(email_adr: Option<&String>, file_path: &String) {
             }
         };
 
-        log::info!("{:?}", email_configuration.server);
+    
         let mailer = match email_configuration.security {
             false => SmtpTransport::builder_dangerous(email_configuration.server).build(),
             true => {
