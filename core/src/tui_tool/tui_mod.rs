@@ -172,7 +172,7 @@ impl App {
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
-                log::info!("PyFex Server shutdown, you can exit the TUI now");
+                log::info!("Rex Server shutdown, you can exit the TUI now");
             }
             Err(e) => {
                 log::error!("Read Error: {}", e);
@@ -215,7 +215,7 @@ impl App {
                 log::info!("{:?}", trimmed)
             }
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
-                log::info!("PyFex Server shutdown, you can exit the TUI now");
+                log::info!("Rex Server shutdown, you can exit the TUI now");
             }
             Err(e) => {
                 log::error!("Read Error: {}", e);
