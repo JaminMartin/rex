@@ -20,7 +20,7 @@ clone the repository and run
 ```shell
 cargo install --path cli/
 ```
-Alternatively, you can embed this in a python project eithe
+Alternatively, you can embed this in a python project, as python bindings are exposed and packaged on `PyPi` as `rex-pycli`.
 # Usage
 Once installed `rex` can be invoked in the terminal with the command `rex`
 ```
@@ -65,7 +65,7 @@ username = "your_username"
 database = "default"
 measurement_table = "your_measurement_table"
 experiment_meta_table ="your_experiment_meta_data_table"
-
+device_meta_tables = "your_device_meta_table"
 ```
 Both the email service and database backend are optional and not required for regular use. Documentaion on how to setup the coresponding clickhousedb server is a work in progress.
 
