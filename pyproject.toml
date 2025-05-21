@@ -1,6 +1,6 @@
 [project]
 name = "rex-pycli"
-version = "0.9.3"
+version = "0.9.4"
 description = "Rex, a rust based data management tool"
 authors = [
     { name = "Jamin Martin"}
