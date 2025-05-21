@@ -1,8 +1,9 @@
 use crate::data_handler::{
-    sanitize_filename, ClickhouseServer, Device, Entity, Experiment, Listner, ServerState,
+    sanitize_filename, Device, Entity, Experiment, Listner, ServerState,
 };
+use crate::db::ClickhouseServer;
 use clickhouse::Client;
-use crossbeam::channel::Sender;
+
 use std::io;
 use std::net::SocketAddr;
 use std::path::MAIN_SEPARATOR;
@@ -13,7 +14,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 pub async fn start_tcp_server(
-    tx: Sender<String>,
     addr: String,
     state: Arc<Mutex<ServerState>>,
     mut shutdown_rx: broadcast::Receiver<()>,
@@ -26,17 +26,17 @@ pub async fn start_tcp_server(
         tokio::select! {
             Ok((socket, addr)) = listener.accept() => {
                 log::debug!("New connection from: {}", addr);
-                let tx_clone = tx.clone();
+              
                 let shutdown_tx = shutdown_tx.clone();
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
-                    handle_connection(socket, addr, tx_clone, state, shutdown_tx).await;
+                    handle_connection(socket, addr, state, shutdown_tx).await;
                 });
             },
             _ = shutdown_rx.recv() => {
                 log::info!("Shutdown signal received for TCP server.");
                 tokio::time::sleep(Duration::from_secs(3)).await;
-                drop(tx);
+          
                 break;
             }
         }
@@ -47,7 +47,6 @@ pub async fn start_tcp_server(
 async fn handle_connection(
     socket: TcpStream,
     addr: SocketAddr,
-    tx: Sender<String>,
     state: Arc<Mutex<ServerState>>,
     shutdown_tx: broadcast::Sender<()>,
 ) {
@@ -67,6 +66,8 @@ async fn handle_connection(
                 if trimmed.is_empty() {
                     continue;
                 }
+
+                log::trace!("Raw data stream:{}", trimmed);
                 match trimmed {
                     "GET_DATASTREAM" => {
                         let state = state.lock().await;
@@ -148,9 +149,7 @@ async fn handle_connection(
                         let entity = Entity::Device(device);
                         state.update_entity(device_name, entity);
 
-                        if tx.send(trimmed.to_string()).is_err() {
-                            log::error!("Failed to send message through channel");
-                        }
+
 
                         if let Err(e) = writer.write_all(b"Device measurements recorded\n").await {
                             log::error!("Failed to send acknowledgment: {}", e);
@@ -165,9 +164,7 @@ async fn handle_connection(
                             let entity = Entity::ExperimentSetup(experiment);
                             state.update_entity(experiment_name, entity);
 
-                            if tx.send(trimmed.to_string()).is_err() {
-                                log::error!("Failed to send message through channel");
-                            }
+
 
                             if let Err(e) = writer
                                 .write_all(b"Experiment configuration processed\n")
@@ -181,9 +178,7 @@ async fn handle_connection(
                             Ok(_) => {
                                 log::debug!("Listner querry");
                                 let state = state.lock().await;
-                                if tx.send(trimmed.to_string()).is_err() {
-                                    log::error!("Failed to send message through channel");
-                                }
+
                                 if state.internal_state == true {
                                     if let Err(e) = writer.write_all(b"Running\n").await {
                                         log::error!("Failed to send acknowledgment: {}", e);
@@ -315,7 +310,10 @@ pub async fn send_to_clickhouse(
         .with_url(format!("{}:{}", config.server, config.port))
         .with_database(config.database)
         .with_user(config.username)
-        .with_password(config.password);
+        .with_password(config.password)
+        .with_option("allow_experimental_json_type", "1")
+        .with_option("input_format_binary_read_json_as_string", "1");
+
     log::info!("Starting clickhouse Logging!");
     {
         let state = state.lock().await;
@@ -336,6 +334,14 @@ pub async fn send_to_clickhouse(
             }
         }
         let _ = insert_measure.end().await?;
+    
+        let mut insert_conf = client.insert(&config.device_meta_table)?;
+        let device_conf = state.device_config_ch(state.uuid).ok_or("no device data found")?;
+        
+        for conf in device_conf.devices {          
+            insert_conf.write(&conf).await?;
+        }
+        let _ = insert_conf.end().await?;
         log::info!("Completed Clickhouse logging!");
         Ok(())
     }

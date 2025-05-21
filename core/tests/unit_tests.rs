@@ -1,6 +1,5 @@
 // tests/basic_test.rs
 
-use crossbeam::channel;
 use regex::Regex;
 use rex_core::data_handler::*;
 use rex_core::tcp_handler::*;
@@ -67,13 +66,13 @@ async fn send_test_device_data(addr: SocketAddr) -> tokio::io::Result<()> {
 fn test_tcp_server_basic_connection() {
     let state = Arc::new(Mutex::new(ServerState::default()));
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-    let (msg_tx, _msg_rx) = channel::unbounded();
+  
     let addr = "127.0.0.1:8080".to_string();
     let addr_clone = addr.clone();
     let shutdown_tx_clone = shutdown_tx.clone();
     let tcp_server_thread = thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(start_tcp_server(msg_tx, addr_clone, state, shutdown_rx, shutdown_tx_clone))
+        rt.block_on(start_tcp_server(addr_clone, state, shutdown_rx, shutdown_tx_clone))
             .unwrap();
     });
 
