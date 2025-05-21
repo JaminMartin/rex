@@ -1,4 +1,5 @@
-use clickhouse::Row;
+
+use uuid::Uuid;
 #[cfg(feature = "extension-module")]
 use pyo3::prelude::{IntoPy, PyObject, Python};
 use serde::{Deserialize, Serialize};
@@ -12,33 +13,11 @@ use time::error::Parse;
 use time::macros::format_description;
 use time::OffsetDateTime;
 use toml::{Table, Value};
-use uuid::Uuid;
 
-#[derive(Debug, Row, Serialize)]
-pub struct ExperimentClickhouse {
-    #[serde(with = "clickhouse::serde::uuid")]
-    experiment_id: Uuid,
-    start_time: String,
-    end_time: String,
-    name: String,
-    email: String,
-    experiment_name: String,
-    experiment_description: String,
-}
+use crate::db::{ClickhouseDevicePrimative, ClickhouseDevices, ClickhouseServer, ClickhouseMeasurementPrimative, ExperimentClickhouse, ClickhouseMeasurements};
 
-#[derive(Debug, Row, Clone, Serialize)]
-pub struct ClickhouseMeasurementPrimative {
-    #[serde(with = "clickhouse::serde::uuid")]
-    experiment_id: Uuid,
-    device_name: String,
-    channel_name: String,
-    sample_index: u32,
-    value: f64,
-}
 
-pub struct ClickhouseMeasurements {
-    pub measurements: Vec<ClickhouseMeasurementPrimative>,
-}
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Configuration {
@@ -62,16 +41,7 @@ pub struct EmailServer {
     pub from_address: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ClickhouseServer {
-    pub server: String,
-    pub port: String,
-    pub database: String,
-    pub username: String,
-    pub password: String,
-    pub measurement_table: String,
-    pub experiment_meta_table: String,
-}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Entity {
     Device(Device),
@@ -261,7 +231,7 @@ impl Device {
                 }
             });
     }
-    pub fn to_clickhouse(&self, id: Uuid) -> Option<ClickhouseMeasurements> {
+    pub fn to_clickhouse_measurements(&self, id: Uuid) -> Option<ClickhouseMeasurements> {
         let measurements = self
             .measurements
             .iter()
@@ -274,25 +244,42 @@ impl Device {
                         device_name: self.device_name.clone(),
                         channel_name: channel_name.clone(),
                         sample_index: i as u32,
+                        channel_index: 0,
                         value: v,
                     })
                     .collect::<Vec<_>>(),
-                // These are a todo and need to decide how to structure coresponding db
-                MeasurementData::Multi(_) => vec![122.123, 13123.123, 131313.13132]
+                MeasurementData::Multi(multi_values) => multi_values
                     .iter()
                     .enumerate()
-                    .map(|(i, &v)| ClickhouseMeasurementPrimative {
-                        experiment_id: id,
-                        device_name: "dummy".to_string(),
-                        channel_name: "voltage".to_string(),
-                        sample_index: i as u32,
-                        value: v,
+                    .flat_map(|(i, v)| {
+                        v.iter()
+                        .enumerate()
+                        .map(move |(j, &vv)| ClickhouseMeasurementPrimative {
+                            experiment_id: id,
+                            device_name: self.device_name.clone(),
+                            channel_name: channel_name.clone(),
+                            sample_index: j as u32,
+                            channel_index: i as u32,
+                            value: vv,
+                        })
                     })
                     .collect::<Vec<_>>(),
             })
-            .collect();
-
+            .collect::<Vec<_>>();
+    
         Some(ClickhouseMeasurements { measurements })
+    }
+
+    pub fn to_clickhouse_config(&self, id: Uuid) -> Option<ClickhouseDevicePrimative> {
+       
+        
+        let conf = ClickhouseDevicePrimative {
+            experiment_id: id, 
+            device_name: self.device_name.to_string(), 
+            device_config: serde_json::to_string(&self.device_config).expect("Cannot unwrap config into valid json"),
+        };
+
+        Some(conf)
     }
 }
 
@@ -513,7 +500,7 @@ impl ServerState {
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         fs::write(file_path, toml_string.clone())?;
         let tmp_dir = env::temp_dir();
-        let temp_path = tmp_dir.join("pyfex.toml");
+        let temp_path = tmp_dir.join("rex.toml");
         fs::write(&temp_path, toml_string)?;
         Ok(())
     }
@@ -541,13 +528,31 @@ impl ServerState {
             .values()
             .filter_map(|entity| {
                 if let Entity::Device(device) = entity {
-                    device.to_clickhouse(id)
+                    device.to_clickhouse_measurements(id)
                 } else {
                     None
                 }
             })
             .collect();
         if device_data.is_empty() {
+            None
+        } else {
+            Some(device_data)
+        }
+    }
+    pub fn device_config_ch(&self, id: Uuid) -> Option<ClickhouseDevices> {
+        let device_data: ClickhouseDevices = ClickhouseDevices { devices:  self
+            .entities
+            .values()
+            .filter_map(|entity| {
+                if let Entity::Device(device) = entity {
+                    device.to_clickhouse_config(id)
+                } else {
+                    None
+                }
+            })
+            .collect()};
+        if device_data.devices.is_empty() {
             None
         } else {
             Some(device_data)
@@ -733,7 +738,7 @@ pub fn get_configuration() -> Result<Configuration, String> {
     Ok(rex_configuration)
 }
 
-// allow for XDG_CONFIG_HOME env to allow MacOS users to have
+// allow for XDG_CONFIG_HOME env to allow MacOS users to have more granular control of config paths
 pub fn configurable_dir_path(
     env_var: &str,
     dir: impl FnOnce() -> Option<PathBuf>,

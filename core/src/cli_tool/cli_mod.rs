@@ -3,7 +3,6 @@ use crate::mail_handler::mailer;
 use crate::tcp_handler::{save_state, send_to_clickhouse, server_status, start_tcp_server};
 use crate::tui_tool::run_tui;
 use clap::Parser;
-use crossbeam::channel;
 use env_logger::{Builder, Target};
 use log::LevelFilter;
 use std::env;
@@ -120,9 +119,9 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             let interpreter_path_clone = Arc::clone(&interpreter_path);
             let script_path_clone = Arc::clone(&script_path);
             log::info!("Server is starting...");
-            let (tx, rx) = channel::unbounded();
+            
             let state = Arc::new(Mutex::new(ServerState::new()));
-            // let (shutdown_tx, _) = broadcast::channel(1);
+            
             let shutdown_rx_tcp = shutdown_tx.subscribe();
             let shutdown_rx_server_satus = shutdown_tx.subscribe();
             let shutdown_rx_logger = shutdown_tx.subscribe();
@@ -134,7 +133,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             let server_state = Arc::clone(&state);
             let server_state_ch = Arc::clone(&state);
 
-            let tcp_tx = tx.clone();
+            
 
             let tui_thread = if args.interactive {
                 Some(thread::spawn(move || {
@@ -174,7 +173,6 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     }
                 };
                 rt.block_on(start_tcp_server(
-                    tcp_tx,
                     addr,
                     tcp_state,
                     shutdown_rx_tcp,
@@ -269,9 +267,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 None
             };
 
-            for received in rx.try_iter() {
-                log::debug!("Received data: {}", received);
-            }
+
             let tcp_server_result = tcp_server_thread.join();
             let interpreter_thread_result = interpreter_thread.join();
             let printer_result = printer_thread.join();
@@ -344,7 +340,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     } else {
                     };
                 } else {
-                    log::error!("Failed to get Clickhouse config, data will not be logged to clickhouse, however it will be logged locally");
+                    log::warn!("Failed to get Clickhouse config, data will not be logged to clickhouse, however it will be logged locally");
                 }
             } else {
                 log::error!("Failed to get configuration.");
