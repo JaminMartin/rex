@@ -67,7 +67,7 @@ measurement_table = "your_measurement_table"
 experiment_meta_table ="your_experiment_meta_data_table"
 device_meta_tables = "your_device_meta_table"
 ```
-Both the email service and database backend are optional and not required for regular use. Documentaion on how to setup the coresponding clickhousedb server is a work in progress.
+Both the email service and database backend are optional and not required for regular use. Documentaion on how to setup the coresponding clickhousedb can be found [here](https://github.com/JaminMartin/rex/tree/master/db-support).
 
 As rex provides either an interactive mode or logging mode, rex also bundles a seperate binary called rex-viewer. It is a interative mode only experience. It can be used to remotely kill or pause/continue scripts. Rex-viewer only accepts one argument which is the ip address and port of the instance currently running rex-cli.
 ```
