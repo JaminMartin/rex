@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS measurement_data (
     device_name String,
     channel_name String,
     sample_index UInt32,
+    channel_index UInt32,
     value Float64
 ) ENGINE = MergeTree ORDER BY (experiment_id, channel_name, sample_index);
 
