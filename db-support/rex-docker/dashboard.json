@@ -80,6 +80,9 @@
                 "tooltip": false,
                 "viz": false
               },
+              "lineStyle": {
+                "fill": "solid"
+              },
               "lineWidth": 5,
               "pointShape": "circle",
               "pointSize": {
@@ -97,6 +100,10 @@
               "steps": [
                 {
                   "color": "green"
+                },
+                {
+                  "color": "red",
+                  "value": 80
                 }
               ]
             }
@@ -111,30 +118,6 @@
                 {
                   "id": "custom.axisLabel",
                   "value": "${device_name_x} - ${measurement_name_x}"
-                }
-              ]
-            },
-            {
-              "__systemRef": "hideSeriesFrom",
-              "matcher": {
-                "id": "byNames",
-                "options": {
-                  "mode": "exclude",
-                  "names": [
-                    "y_value"
-                  ],
-                  "prefix": "All except:",
-                  "readOnly": true
-                }
-              },
-              "properties": [
-                {
-                  "id": "custom.hideFrom",
-                  "value": {
-                    "legend": false,
-                    "tooltip": false,
-                    "viz": true
-                  }
                 }
               ]
             }
@@ -156,7 +139,26 @@
           },
           "mapping": "auto",
           "series": [
-            {}
+            {
+              "frame": {
+                "matcher": {
+                  "id": "byIndex",
+                  "options": 0
+                }
+              },
+              "x": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "x_value"
+                }
+              },
+              "y": {
+                "matcher": {
+                  "id": "byName",
+                  "options": "y_value"
+                }
+              }
+            }
           ],
           "tooltip": {
             "hideZeros": false,
@@ -167,6 +169,10 @@
         "pluginVersion": "11.6.1",
         "targets": [
           {
+            "datasource": {
+              "type": "grafana-clickhouse-datasource",
+              "uid": "${DS_GRAFANA-CLICKHOUSE-DATASOURCE}"
+            },
             "editorType": "sql",
             "format": 1,
             "meta": {
@@ -182,11 +188,7 @@
             "pluginVersion": "4.9.0",
             "queryType": "table",
             "rawSql": "SELECT\n\nx.value AS x_value,\n\ny.value AS y_value\n\nFROM\n\n(SELECT sample_index, value\n\nFROM measurement_data\n\nWHERE experiment_id = '${experiment_id}'\n\nAND device_name = '${device_name_x}'\n\nAND channel_name = '${measurement_name_x}'\n\nAND channel_index = ${measurement_slice}) x\n\nJOIN\n\n(SELECT sample_index, value\n\nFROM measurement_data\n\nWHERE experiment_id = '${experiment_id}'\n\nAND device_name = '${device_name_y}'\n\nAND channel_name = '${measurement_name_y}'\n\nAND channel_index = ${measurement_slice}) y\n\nON x.sample_index = y.sample_index\n\nORDER BY x.sample_index",
-            "refId": "A",
-            "datasource": {
-              "type": "grafana-clickhouse-datasource",
-              "uid": "${DS_GRAFANA-CLICKHOUSE-DATASOURCE}"
-            }
+            "refId": "A"
           }
         ],
         "title": "Measurement Data",
@@ -223,7 +225,7 @@
           "overrides": []
         },
         "gridPos": {
-          "h": 26,
+          "h": 44,
           "w": 12,
           "x": 12,
           "y": 0
@@ -240,7 +242,13 @@
             ],
             "show": false
           },
-          "showHeader": true
+          "showHeader": true,
+          "sortBy": [
+            {
+              "desc": true,
+              "displayName": "start_time"
+            }
+          ]
         },
         "pluginVersion": "11.6.1",
         "targets": [
@@ -276,10 +284,171 @@
             "refId": "A"
           }
         ],
-        "title": "Recently run experiments",
+        "title": "Experiments",
+        "type": "table"
+      },
+      {
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "${DS_GRAFANA-CLICKHOUSE-DATASOURCE}"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "custom": {
+              "align": "auto",
+              "cellOptions": {
+                "type": "auto",
+                "wrapText": true
+              },
+              "filterable": true,
+              "inspect": true
+            },
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green"
+                },
+                {
+                  "color": "red",
+                  "value": 80
+                }
+              ]
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "experiment_id"
+              },
+              "properties": [
+                {
+                  "id": "custom.width",
+                  "value": 148
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "device_name"
+              },
+              "properties": [
+                {
+                  "id": "custom.width",
+                  "value": 234
+                }
+              ]
+            }
+          ]
+        },
+        "gridPos": {
+          "h": 16,
+          "w": 12,
+          "x": 0,
+          "y": 26
+        },
+        "id": 3,
+        "options": {
+          "cellHeight": "sm",
+          "footer": {
+            "countRows": false,
+            "fields": "",
+            "reducer": [
+              "sum"
+            ],
+            "show": false
+          },
+          "showHeader": true,
+          "sortBy": []
+        },
+        "pluginVersion": "11.6.1",
+        "targets": [
+          {
+            "builderOptions": {
+              "aggregates": [],
+              "columns": [
+                {
+                  "alias": "*",
+                  "custom": false,
+                  "name": "*",
+                  "type": "String"
+                }
+              ],
+              "database": "default",
+              "filters": [
+                {
+                  "condition": "AND",
+                  "filterType": "custom",
+                  "key": "experiment_id",
+                  "label": "experiment_id",
+                  "operator": "=",
+                  "type": "UUID",
+                  "value": "$(experiment_id)"
+                }
+              ],
+              "groupBy": [],
+              "limit": 1000,
+              "meta": {},
+              "mode": "list",
+              "orderBy": [],
+              "queryType": "table",
+              "table": "device_info"
+            },
+            "editorType": "sql",
+            "format": 1,
+            "meta": {
+              "builderOptions": {
+                "aggregates": [],
+                "columns": [
+                  {
+                    "alias": "*",
+                    "custom": false,
+                    "name": "*",
+                    "type": "String"
+                  }
+                ],
+                "database": "default",
+                "filters": [
+                  {
+                    "condition": "AND",
+                    "filterType": "custom",
+                    "key": "experiment_id",
+                    "label": "experiment_id",
+                    "operator": "=",
+                    "type": "UUID",
+                    "value": "$(experiment_id)"
+                  }
+                ],
+                "groupBy": [],
+                "limit": 1000,
+                "meta": {},
+                "mode": "list",
+                "orderBy": [],
+                "queryType": "table",
+                "table": "device_info"
+              }
+            },
+            "pluginVersion": "4.9.0",
+            "queryType": "table",
+            "rawSql": "SELECT * FROM \"default\".\"device_info\" WHERE experiment_id = '${experiment_id}'  LIMIT 1000",
+            "refId": "A",
+            "datasource": {
+              "type": "grafana-clickhouse-datasource",
+              "uid": "${DS_GRAFANA-CLICKHOUSE-DATASOURCE}"
+            }
+          }
+        ],
+        "title": "Experiment configuration",
         "type": "table"
       }
     ],
+    "refresh": "5m",
     "schemaVersion": 41,
     "tags": [],
     "templating": {
@@ -354,8 +523,8 @@
     },
     "timepicker": {},
     "timezone": "browser",
-    "title": "Experimental Results",
+    "title": "experiment_dashboard",
     "uid": "ben39p1rhswe8e",
-    "version": 5,
+    "version": 11,
     "weekStart": ""
   }
