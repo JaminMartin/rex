@@ -734,7 +734,7 @@ pub fn get_configuration() -> Result<Configuration, String> {
             return Err(e.to_string());
         }
     };
-    log::debug!("{:?}", rex_configuration);
+    
     Ok(rex_configuration)
 }
 

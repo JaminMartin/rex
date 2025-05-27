@@ -21,6 +21,7 @@ use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
+use std::net::TcpListener;
 /// A commandline experiment manager
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -49,6 +50,12 @@ struct Args {
     /// Enable interactive TUI mode
     #[arg(short, long)]
     interactive: bool,
+    /// Port overide, allows for overiding default port. Will export this as environment variable for devices to utilise.
+    #[arg(short = 'P', long)]
+    port: Option<String>,
+    /// Optional path to config file used by experiment script. Useful when it is critical the script goes unmodified., 
+    #[arg(short, long)]
+    scirpt_config: Option<String>,
 }
 /// A commandline experiment viewer
 #[derive(Parser, Debug)]
@@ -132,9 +139,37 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             let tcp_state = Arc::clone(&state);
             let server_state = Arc::clone(&state);
             let server_state_ch = Arc::clone(&state);
-
+            let port = match get_configuration() {
+                Ok(conf) => match conf.general.port {
+                    port => port,
+                },
+                Err(e) => {
+                    log::error!("failed to get configuration due to: {}", e);
+                    return;
+                }
+            };
+            let port = if is_port_available(&port) {
+                port 
+            } else {
+                log::warn!("Port {} is already in use, checking if a fall back port has been specified", port);
+                match args.port {
+                    
+                    Some(ref fallback_port) => {
+                        log::info!("Fall back port found! using it instead and broadcasting the environment variable");
+                        fallback_port.clone()
+                        },
+                        
+                    None => {
+                        log::error!("No alternative port specified, cancelling run");
+                        return}
+                }
+            };
+            match args.scirpt_config {
+                Some(ref config) => env::set_var("REX_PROVIDED_CONFIG_PATH", &config),
+                None => {}
+            };
+            env::set_var("REX_PORT", &port);
             
-
             let tui_thread = if args.interactive {
                 Some(thread::spawn(move || {
                     let rt = match tokio::runtime::Runtime::new() {
@@ -154,15 +189,6 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 None
             };
             let tcp_server_thread = thread::spawn(move || {
-                let port = match get_configuration() {
-                    Ok(conf) => match conf.general.port {
-                        interpreter => interpreter,
-                    },
-                    Err(e) => {
-                        log::error!("failed to get configuration due to: {}", e);
-                        return;
-                    }
-                };
 
                 let addr = format!("127.0.0.1:{port}", port = port);
                 let rt = match tokio::runtime::Runtime::new() {
@@ -545,4 +571,13 @@ fn process_args(original_args: Vec<String>) -> Vec<String> {
         .collect();
     log::warn!("cleaned args: {:?}", cleaned_args);
     cleaned_args
+}
+
+
+
+fn is_port_available(port: &str) -> bool {
+    match TcpListener::bind(format!("127.0.0.1:{}", port)) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
 }
