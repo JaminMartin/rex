@@ -15,13 +15,13 @@ use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 //use time::format_description::well_known::iso8601::Config;
+use std::net::TcpListener;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
-use std::net::TcpListener;
 /// A commandline experiment manager
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -53,7 +53,7 @@ struct Args {
     /// Port overide, allows for overiding default port. Will export this as environment variable for devices to utilise.
     #[arg(short = 'P', long)]
     port: Option<String>,
-    /// Optional path to config file used by experiment script. Useful when it is critical the script goes unmodified., 
+    /// Optional path to config file used by experiment script. Useful when it is critical the script goes unmodified.,
     #[arg(short, long)]
     scirpt_config: Option<String>,
 }
@@ -126,9 +126,9 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             let interpreter_path_clone = Arc::clone(&interpreter_path);
             let script_path_clone = Arc::clone(&script_path);
             log::info!("Server is starting...");
-            
+
             let state = Arc::new(Mutex::new(ServerState::new()));
-            
+
             let shutdown_rx_tcp = shutdown_tx.subscribe();
             let shutdown_rx_server_satus = shutdown_tx.subscribe();
             let shutdown_rx_logger = shutdown_tx.subscribe();
@@ -149,19 +149,22 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 }
             };
             let port = if is_port_available(&port) {
-                port 
+                port
             } else {
-                log::warn!("Port {} is already in use, checking if a fall back port has been specified", port);
+                log::warn!(
+                    "Port {} is already in use, checking if a fall back port has been specified",
+                    port
+                );
                 match args.port {
-                    
                     Some(ref fallback_port) => {
                         log::info!("Fall back port found! using it instead and broadcasting the environment variable");
                         fallback_port.clone()
-                        },
-                        
+                    }
+
                     None => {
                         log::error!("No alternative port specified, cancelling run");
-                        return}
+                        return;
+                    }
                 }
             };
             match args.scirpt_config {
@@ -169,7 +172,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 None => {}
             };
             env::set_var("REX_PORT", &port);
-            
+
             let tui_thread = if args.interactive {
                 Some(thread::spawn(move || {
                     let rt = match tokio::runtime::Runtime::new() {
@@ -189,7 +192,6 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 None
             };
             let tcp_server_thread = thread::spawn(move || {
-
                 let addr = format!("127.0.0.1:{port}", port = port);
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
@@ -293,7 +295,6 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 None
             };
 
-
             let tcp_server_result = tcp_server_thread.join();
             let interpreter_thread_result = interpreter_thread.join();
             let printer_result = printer_thread.join();
@@ -337,13 +338,13 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             let output_file = match dumper_result {
                 Some(filename) => {
                     log::info!("Data Storage Thread shutdown successfully.");
-                    filename
+                    Some(filename)
                 }
                 None => {
                     log::info!(
                         "Data Storage Thread was not running, so no file output has been generated - was this a dry run?"
                     );
-                    return;
+                    None
                 }
             };
             let mut clickhouse_thread = None;
@@ -383,7 +384,12 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             };
 
             log::info!("The output file directory is: {}", output_path);
-            mailer(args.email.as_ref(), &output_file);
+            match output_file {
+                Some(output_file) => {
+                    mailer(args.email.as_ref(), &output_file);
+                }
+                None => {}
+            }
 
             match tui_thread {
                 Some(tui_result) => {
@@ -572,8 +578,6 @@ fn process_args(original_args: Vec<String>) -> Vec<String> {
     log::warn!("cleaned args: {:?}", cleaned_args);
     cleaned_args
 }
-
-
 
 fn is_port_available(port: &str) -> bool {
     match TcpListener::bind(format!("127.0.0.1:{}", port)) {

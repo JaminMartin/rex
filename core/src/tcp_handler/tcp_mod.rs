@@ -239,7 +239,7 @@ pub async fn save_state(
                         } else {
                             let file_name = match state_guard.get_experiment_name() {
                                 Some(name) => name,
-                                None => "".to_string(),
+                                None => break,
                             };
                             let sanitized_file_name = sanitize_filename(file_name);
                             let sanitized_output_path = clean_trailing_slash(output_path);
