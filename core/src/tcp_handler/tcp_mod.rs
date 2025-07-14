@@ -1,6 +1,4 @@
-use crate::data_handler::{
-    sanitize_filename, Device, Entity, Experiment, Listner, ServerState,
-};
+use crate::data_handler::{sanitize_filename, Device, Entity, Experiment, Listner, ServerState};
 use crate::db::ClickhouseServer;
 use clickhouse::Client;
 
@@ -26,7 +24,7 @@ pub async fn start_tcp_server(
         tokio::select! {
             Ok((socket, addr)) = listener.accept() => {
                 log::debug!("New connection from: {}", addr);
-              
+
                 let shutdown_tx = shutdown_tx.clone();
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
@@ -36,7 +34,7 @@ pub async fn start_tcp_server(
             _ = shutdown_rx.recv() => {
                 log::info!("Shutdown signal received for TCP server.");
                 tokio::time::sleep(Duration::from_secs(3)).await;
-          
+
                 break;
             }
         }
@@ -149,8 +147,6 @@ async fn handle_connection(
                         let entity = Entity::Device(device);
                         state.update_entity(device_name, entity);
 
-
-
                         if let Err(e) = writer.write_all(b"Device measurements recorded\n").await {
                             log::error!("Failed to send acknowledgment: {}", e);
                             break;
@@ -163,8 +159,6 @@ async fn handle_connection(
                             let mut state = state.lock().await;
                             let entity = Entity::ExperimentSetup(experiment);
                             state.update_entity(experiment_name, entity);
-
-
 
                             if let Err(e) = writer
                                 .write_all(b"Experiment configuration processed\n")
@@ -258,7 +252,7 @@ pub async fn save_state(
                 state.finalise_time();
                 let file_name = match state.get_experiment_name() {
                     Some(file_name) => file_name,
-                    None => "".to_string()
+                    None => break,
                 };
                 let sanitized_file_name = sanitize_filename(file_name);
                 let sanitized_output_path = clean_trailing_slash(output_path);
@@ -334,11 +328,13 @@ pub async fn send_to_clickhouse(
             }
         }
         let _ = insert_measure.end().await?;
-    
+
         let mut insert_conf = client.insert(&config.device_meta_table)?;
-        let device_conf = state.device_config_ch(state.uuid).ok_or("no device data found")?;
-        
-        for conf in device_conf.devices {          
+        let device_conf = state
+            .device_config_ch(state.uuid)
+            .ok_or("no device data found")?;
+
+        for conf in device_conf.devices {
             insert_conf.write(&conf).await?;
         }
         let _ = insert_conf.end().await?;
