@@ -1,5 +1,3 @@
-
-use uuid::Uuid;
 #[cfg(feature = "extension-module")]
 use pyo3::prelude::{IntoPy, PyObject, Python};
 use serde::{Deserialize, Serialize};
@@ -14,10 +12,12 @@ use time::macros::format_description;
 use time::OffsetDateTime;
 use toml::{Table, Value};
 
-use crate::db::{ClickhouseDevicePrimative, ClickhouseDevices, ClickhouseServer, ClickhouseMeasurementPrimative, ExperimentClickhouse, ClickhouseMeasurements};
+use uuid::Uuid;
 
-
-
+use crate::db::{
+    ClickhouseDevicePrimative, ClickhouseDevices, ClickhouseMeasurementPrimative,
+    ClickhouseMeasurements, ClickhouseServer, ExperimentClickhouse,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Configuration {
@@ -40,7 +40,6 @@ pub struct EmailServer {
     pub port: Option<String>,
     pub from_address: String,
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Entity {
@@ -77,18 +76,7 @@ impl Experiment {
 
     pub fn to_clickhouse(&self, id: Uuid) -> Option<ExperimentClickhouse> {
         let start_time = self.start_time.as_ref()?;
-        let end_time = self.start_time.as_ref()?;
-
-        // This is currently buggy.
-        // let time_start = match custom_to_standard(&start_time, false) {
-        //     Ok(ts) => ts,
-        //     Err(_) => return None,
-        // };
-
-        // let time_end = match custom_to_standard(&end_time, false) {
-        //     Ok(ts) => ts,
-        //     Err(_) => return None,
-        // };
+        let end_time = self.end_time.as_ref()?;
 
         let exp = ExperimentClickhouse {
             experiment_id: id,
@@ -135,11 +123,15 @@ impl IntoPy<PyObject> for MeasurementData {
         }
     }
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Device {
     pub device_name: String,
     pub device_config: HashMap<String, Value>,
     pub measurements: HashMap<String, MeasurementData>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default)]
+    pub timestamps: HashMap<String, Vec<String>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeviceData {
@@ -148,14 +140,26 @@ pub struct DeviceData {
 }
 impl Device {
     fn update(&mut self, other: Self) {
+        let timestamp = vec![create_log_timestamp()];
         for (measure_type, values) in other.measurements {
-            match self.measurements.entry(measure_type) {
+            match self.measurements.entry(measure_type.clone()) {
                 Entry::Occupied(mut entry) => match (entry.get_mut(), &values) {
                     (MeasurementData::Single(existing), MeasurementData::Single(new_values)) => {
                         existing.extend(new_values.clone());
+
+                        if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
+                            if let Some(other_timestamps) = other.timestamps.get(&measure_type) {
+                                ts_vec.extend(other_timestamps.clone());
+                            }
+                        }
                     }
                     (MeasurementData::Multi(existing), MeasurementData::Multi(new_values)) => {
                         existing.extend(new_values.clone());
+                        if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
+                            if let Some(other_timestamps) = other.timestamps.get(&measure_type) {
+                                ts_vec.extend(other_timestamps.clone());
+                            }
+                        }
                     }
                     _ => {
                         log::error!("Measurement type mismatch during update for '{}' - cannot change between Single and Multi variants", entry.key());
@@ -163,11 +167,13 @@ impl Device {
                 },
                 Entry::Vacant(entry) => {
                     entry.insert(values);
+                    self.timestamps.insert(measure_type, timestamp.clone());
                 }
             }
         }
     }
-    fn latest_data_truncated(&self, max_measurements: usize) -> DeviceData {
+
+    fn latest_measurements_truncated(&self, max_measurements: usize) -> HashMap<String, Vec<f64>> {
         let truncated_measurements = self
             .measurements
             .iter()
@@ -203,12 +209,48 @@ impl Device {
             })
             .collect();
 
+        truncated_measurements
+    }
+    fn latest_timestamps_truncated(&self, max_measurements: usize) -> HashMap<String, Vec<f64>> {
+        self.timestamps
+            .iter()
+            .filter_map(|(key, values)| {
+                let base_time = values.get(0).and_then(|s| {
+                    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+                })?;
+
+                let truncated: Vec<String> = values
+                    .iter()
+                    .rev()
+                    .take(max_measurements)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+
+                let rel_secs = truncated
+                    .into_iter()
+                    .filter_map(|ts| {
+                        OffsetDateTime::parse(&ts, &time::format_description::well_known::Rfc3339)
+                            .ok()
+                            .map(|t| (t - base_time).as_seconds_f64())
+                    })
+                    .collect::<Vec<f64>>();
+                let time_key = format!("Time since first {} measurement (s)", key.clone());
+                Some((time_key, rel_secs))
+            })
+            .collect()
+    }
+    fn latest_data_truncated(&self, max_measurements: usize) -> DeviceData {
+        let mut combined = self.latest_measurements_truncated(max_measurements);
+        let timestamps_truncated = self.latest_timestamps_truncated(max_measurements);
+        combined.extend(timestamps_truncated);
         DeviceData {
             device_name: self.device_name.clone(),
-            measurements: truncated_measurements,
+            measurements: combined,
         }
     }
-
     pub fn truncate(&mut self) {
         self.measurements
             .iter_mut()
@@ -230,8 +272,28 @@ impl Device {
                     }
                 }
             });
+        self.timestamps.iter_mut().for_each(|(_, values)| {
+            let len = values.len();
+            if len > 100 {
+                values.drain(0..len - 100);
+            }
+        });
     }
     pub fn to_clickhouse_measurements(&self, id: Uuid) -> Option<ClickhouseMeasurements> {
+        let parsed_timestamps: HashMap<String, Vec<OffsetDateTime>> = self
+            .timestamps
+            .iter()
+            .map(|(channel_name, ts_vec)| {
+                let parsed = ts_vec
+                    .iter()
+                    .map(|ts| {
+                        OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339)
+                            .expect("invalid timestamp")
+                    })
+                    .collect();
+                (channel_name.clone(), parsed)
+            })
+            .collect();
         let measurements = self
             .measurements
             .iter()
@@ -246,37 +308,47 @@ impl Device {
                         sample_index: i as u32,
                         channel_index: 0,
                         value: v,
+                        timestamp: parsed_timestamps
+                            .get(channel_name)
+                            .and_then(|ts| ts.get(i))
+                            .copied()
+                            .unwrap_or_else(OffsetDateTime::now_utc),
                     })
                     .collect::<Vec<_>>(),
                 MeasurementData::Multi(multi_values) => multi_values
                     .iter()
                     .enumerate()
                     .flat_map(|(i, v)| {
-                        v.iter()
-                        .enumerate()
-                        .map(move |(j, &vv)| ClickhouseMeasurementPrimative {
-                            experiment_id: id,
-                            device_name: self.device_name.clone(),
-                            channel_name: channel_name.clone(),
-                            sample_index: j as u32,
-                            channel_index: i as u32,
-                            value: vv,
+                        v.iter().enumerate().map({
+                            let ts_value = parsed_timestamps.clone();
+                            move |(j, &vv)| ClickhouseMeasurementPrimative {
+                                experiment_id: id,
+                                device_name: self.device_name.clone(),
+                                channel_name: channel_name.clone(),
+                                sample_index: j as u32,
+                                channel_index: i as u32,
+                                value: vv,
+                                timestamp: ts_value
+                                    .get(channel_name)
+                                    .and_then(|ts| ts.get(i))
+                                    .copied()
+                                    .unwrap_or_else(OffsetDateTime::now_utc),
+                            }
                         })
                     })
                     .collect::<Vec<_>>(),
             })
             .collect::<Vec<_>>();
-    
+
         Some(ClickhouseMeasurements { measurements })
     }
 
     pub fn to_clickhouse_config(&self, id: Uuid) -> Option<ClickhouseDevicePrimative> {
-       
-        
         let conf = ClickhouseDevicePrimative {
-            experiment_id: id, 
-            device_name: self.device_name.to_string(), 
-            device_config: serde_json::to_string(&self.device_config).expect("Cannot unwrap config into valid json"),
+            experiment_id: id,
+            device_name: self.device_name.to_string(),
+            device_config: serde_json::to_string(&self.device_config)
+                .expect("Cannot unwrap config into valid json"),
         };
 
         Some(conf)
@@ -323,6 +395,7 @@ impl ServerState {
                 }
             },
         }
+
         if self.retention == false {
             self.truncate_data();
         };
@@ -489,9 +562,15 @@ impl ServerState {
                             }
                         }
                     }
-
+                    let mut time_stamps = Table::new();
+                    for (measurement_type, values) in &device.timestamps {
+                        time_stamps.insert(
+                            measurement_type.clone(),
+                            Value::Array(values.iter().map(|v| Value::String(v.clone())).collect()),
+                        );
+                    }
                     device_config.insert("data".to_string(), Value::Table(data_table));
-
+                    device_config.insert("timestamps".to_string(), Value::Table(time_stamps));
                     device_table.insert(key.clone(), Value::Table(device_config));
                 }
             }
@@ -541,17 +620,19 @@ impl ServerState {
         }
     }
     pub fn device_config_ch(&self, id: Uuid) -> Option<ClickhouseDevices> {
-        let device_data: ClickhouseDevices = ClickhouseDevices { devices:  self
-            .entities
-            .values()
-            .filter_map(|entity| {
-                if let Entity::Device(device) = entity {
-                    device.to_clickhouse_config(id)
-                } else {
-                    None
-                }
-            })
-            .collect()};
+        let device_data: ClickhouseDevices = ClickhouseDevices {
+            devices: self
+                .entities
+                .values()
+                .filter_map(|entity| {
+                    if let Entity::Device(device) = entity {
+                        device.to_clickhouse_config(id)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        };
         if device_data.devices.is_empty() {
             None
         } else {
@@ -635,6 +716,11 @@ pub fn create_time_stamp(header: bool) -> String {
     };
 
     now.format(&format_file).unwrap()
+}
+pub fn create_log_timestamp() -> String {
+    OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap()
 }
 
 #[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
@@ -734,7 +820,7 @@ pub fn get_configuration() -> Result<Configuration, String> {
             return Err(e.to_string());
         }
     };
-    
+
     Ok(rex_configuration)
 }
 

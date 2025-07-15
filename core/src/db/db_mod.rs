@@ -1,8 +1,7 @@
-
 use clickhouse::Row;
-use uuid::Uuid;
 use serde::{Deserialize, Serialize};
-
+use time::OffsetDateTime;
+use uuid::Uuid;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClickhouseServer {
     pub server: String,
@@ -36,6 +35,8 @@ pub struct ClickhouseMeasurementPrimative {
     pub sample_index: u32,
     pub channel_index: u32,
     pub value: f64,
+    #[serde(with = "clickhouse::serde::time::datetime64::micros")]
+    pub timestamp: OffsetDateTime,
 }
 
 #[derive(Debug, Row, Clone, Serialize, Deserialize)]

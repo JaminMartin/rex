@@ -1,4 +1,6 @@
-use crate::data_handler::{sanitize_filename, Device, Entity, Experiment, Listner, ServerState};
+use crate::data_handler::{
+    create_log_timestamp, sanitize_filename, Device, Entity, Experiment, Listner, ServerState,
+};
 use crate::db::ClickhouseServer;
 use clickhouse::Client;
 
@@ -141,7 +143,13 @@ async fn handle_connection(
                 }
 
                 match serde_json::from_str::<Device>(trimmed) {
-                    Ok(device) => {
+                    Ok(mut device) => {
+                        let timestamp = vec![create_log_timestamp()];
+                        for measure_type in device.measurements.keys() {
+                            device
+                                .timestamps
+                                .insert(measure_type.clone(), timestamp.clone());
+                        }
                         let device_name = device.device_name.clone();
                         let mut state = state.lock().await;
                         let entity = Entity::Device(device);
