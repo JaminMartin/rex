@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS measurement_data (
     channel_name String,
     sample_index UInt32,
     channel_index UInt32,
-    value Float64
+    value Float64,
+    timestamp DateTime64(6, 'UTC')
 ) ENGINE = MergeTree ORDER BY (experiment_id, channel_name, sample_index);
 
 -- Create device meta data for the associated experiment and measurement data
