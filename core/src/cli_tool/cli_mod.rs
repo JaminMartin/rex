@@ -157,8 +157,16 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 );
                 match args.port {
                     Some(ref fallback_port) => {
-                        log::info!("Fall back port found! using it instead and broadcasting the environment variable");
-                        fallback_port.clone()
+                        if fallback_port != &port {
+                            log::info!(
+                                "Fallback port {} found! Using it instead and broadcasting the environment variable",
+                                fallback_port
+                            );
+                            fallback_port.clone()
+                        } else {
+                            log::error!("The fallback port is the same as the primary and also in use, cancelling run");
+                            return;
+                        }
                     }
 
                     None => {
@@ -174,6 +182,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             env::set_var("REX_PORT", &port);
 
             let tui_thread = if args.interactive {
+                let port_tui = port.clone();
                 Some(thread::spawn(move || {
                     let rt = match tokio::runtime::Runtime::new() {
                         Ok(rt) => rt,
@@ -183,7 +192,8 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                         }
                     };
                     let remote = false;
-                    match rt.block_on(run_tui("127.0.0.1:7676", remote)) {
+                    let addr = format!("127.0.0.1:{port}", port = port_tui);
+                    match rt.block_on(run_tui(&addr, remote)) {
                         Ok(_) => log::info!("TUI closed successfully"),
                         Err(e) => log::error!("TUI encountered an error: {}", e),
                     }
