@@ -23,6 +23,7 @@ async fn send_test_device_data(addr: SocketAddr) -> tokio::io::Result<()> {
         device_name: "test_device".to_string(),
         device_config: HashMap::new(),
         measurements: HashMap::new(),
+        timestamps: HashMap::new(),
     };
     let json = serde_json::to_string(&test_device).unwrap();
     println!("Sending data to server: {}", json);
@@ -66,14 +67,19 @@ async fn send_test_device_data(addr: SocketAddr) -> tokio::io::Result<()> {
 fn test_tcp_server_basic_connection() {
     let state = Arc::new(Mutex::new(ServerState::default()));
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-  
-    let addr = "127.0.0.1:8080".to_string();
+
+    let addr = "127.0.0.1:7676".to_string();
     let addr_clone = addr.clone();
     let shutdown_tx_clone = shutdown_tx.clone();
     let tcp_server_thread = thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(start_tcp_server(addr_clone, state, shutdown_rx, shutdown_tx_clone))
-            .unwrap();
+        rt.block_on(start_tcp_server(
+            addr_clone,
+            state,
+            shutdown_rx,
+            shutdown_tx_clone,
+        ))
+        .unwrap();
     });
 
     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -168,7 +174,12 @@ trace = [[1.1,2.2,3.3],[4.4,5.5,6.6],[7.7,8.8,9.9],[10.0,11.1, 12.2]]
     match trace {
         MeasurementData::Multi(values) => assert_eq!(
             values,
-            &vec![vec![1.1,2.2,3.3],vec![4.4,5.5,6.6],vec![7.7,8.8,9.9],vec![10.0,11.1, 12.2]]
+            &vec![
+                vec![1.1, 2.2, 3.3],
+                vec![4.4, 5.5, 6.6],
+                vec![7.7, 8.8, 9.9],
+                vec![10.0, 11.1, 12.2]
+            ]
         ),
         _ => panic!("Unexpected data format for voltage"),
     }
