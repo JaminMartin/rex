@@ -1612,15 +1612,16 @@ checksum = "e3a8614ee435691de62bcffcf4a66d91b3594bf1428a5722e79103249a095690"
 
 [[package]]
 name = "rex-cli"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
+ "clap",
  "rex-core",
  "tokio",
 ]
 
 [[package]]
 name = "rex-core"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "clap",
  "clickhouse",

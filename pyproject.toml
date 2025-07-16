@@ -1,10 +1,8 @@
 [project]
 name = "rex-pycli"
-version = "0.9.4"
+version = "0.9.5"
 description = "Rex, a rust based data management tool"
-authors = [
-    { name = "Jamin Martin"}
-]
+authors = [{ name = "Jamin Martin" }]
 requires-python = ">=3.12"
 [build-system]
 requires = ["maturin>=1.7,<2.0"]
