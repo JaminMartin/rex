@@ -2,7 +2,7 @@ use crate::data_handler::{create_time_stamp, get_configuration, ServerState};
 use crate::mail_handler::mailer;
 use crate::tcp_handler::{save_state, send_to_clickhouse, server_status, start_tcp_server};
 use crate::tui_tool::run_tui;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use env_logger::{Builder, Target};
 use log::LevelFilter;
 use std::env;
@@ -22,10 +22,25 @@ use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
+
+#[derive(Parser)]
+#[command(name = "rex")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    Run(RunArgs),
+    View(StandaloneArgs),
+    // Future: Serve(ServeArgs),
+}
+
 /// A commandline experiment manager
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct Args {
+pub struct RunArgs {
     /// desired log level, info displays summary of connected instruments & recent data. debug will include all data, including standard output from Python.
     #[arg(short, long, default_value_t = 2)]
     verbosity: u8,
@@ -55,12 +70,12 @@ struct Args {
     port: Option<String>,
     /// Optional path to config file used by experiment script. Useful when it is critical the script goes unmodified.,
     #[arg(short, long)]
-    scirpt_config: Option<String>,
+    config: Option<String>,
 }
 /// A commandline experiment viewer
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct StandaloneArgs {
+pub struct StandaloneArgs {
     // Port the current experiment is running on. If you are running this on the same device it will be 127.0.0.1:7676
     // otherwise, please use the devices IP , device_ip:7676
     #[arg(short, long)]
@@ -72,22 +87,26 @@ struct StandaloneArgs {
 // Wrapper for generating python bindings for rex for direct inclusion with other downstream packages.
 #[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
 pub fn cli_parser_py() {
-    let (shutdown_tx, _) = broadcast::channel(1);
+    let original_args: Vec<String> = std::env::args().collect();
+    let cleaned_args = process_args(original_args);
 
-    cli_parser_core(shutdown_tx);
+    // Default to "run" if no subcommand specified
+    let mut args_with_subcommand = vec!["rex".to_string(), "run".to_string()];
+    args_with_subcommand.extend(cleaned_args.into_iter().skip(1));
+
+    let cli = Cli::parse_from(args_with_subcommand);
+
+    match cli.command {
+        Commands::Run(args) => {
+            let (shutdown_tx, _) = broadcast::channel(1);
+            run_experiment(args, shutdown_tx);
+        }
+        Commands::View(args) => cli_standalone(args),
+        // Future: Commands::Serve(args) => run_server(args),
+    }
 }
 // Core CLI tool used for both rex adn rex-py
-pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
-    let original_args: Vec<String> = std::env::args().collect();
-
-    let mut cleaned_args = process_args(original_args);
-
-    if let Some(first_arg_index) = cleaned_args.iter().position(|arg| !arg.starts_with('-')) {
-        cleaned_args[first_arg_index] = "rex".to_string();
-    }
-
-    let args = Args::parse_from(cleaned_args);
-
+pub fn run_experiment(args: RunArgs, shutdown_tx: broadcast::Sender<()>) {
     let log_level = match args.verbosity {
         0 => LevelFilter::Error,
         1 => LevelFilter::Warn,
@@ -105,7 +124,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             .format_timestamp_secs();
         builder.init();
     };
-    log::info!(target: "rex", "Experiment starting in {} s", args.delay * 60);
+    log::info!("Experiment starting in {} s", args.delay * 60);
     sleep(Duration::from_secs(&args.delay * 60));
     let interpreter_path_str = match get_configuration() {
         Ok(conf) => match conf.general.interpreter {
@@ -175,7 +194,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     }
                 }
             };
-            match args.scirpt_config {
+            match args.config {
                 Some(ref config) => env::set_var("REX_PROVIDED_CONFIG_PATH", &config),
                 None => {}
             };
@@ -370,8 +389,19 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                                 }
                             };
 
-                            rt.block_on(send_to_clickhouse(server_state_ch, clickhouse_config))
-                                .unwrap();
+                            // Replace .unwrap() with proper error handling
+                            match rt
+                                .block_on(send_to_clickhouse(server_state_ch, clickhouse_config))
+                            {
+                                Ok(_) => log::info!("ClickHouse logging completed successfully"),
+                                Err(e) => {
+                                    if e.to_string().contains("No experiment data found") {
+                                        log::info!("No experiment data to send to ClickHouse (likely due to quick shutdown)");
+                                    } else {
+                                        log::error!("ClickHouse logging failed: {:?}", e);
+                                    }
+                                }
+                            }
                         });
                         clickhouse_thread = Some(handle);
                     } else {
@@ -393,9 +423,9 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 None => {}
             };
 
-            log::info!("The output file directory is: {}", output_path);
             match output_file {
                 Some(output_file) => {
+                    log::info!("The output file directory is: {}", output_path);
                     mailer(args.email.as_ref(), &output_file);
                 }
                 None => {}
@@ -524,16 +554,7 @@ async fn start_interpreter_process_async(
 }
 
 #[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
-pub fn cli_standalone() {
-    let original_args: Vec<String> = std::env::args().collect();
-    //let args = Args::parse_from(original_args);
-    let mut cleaned_args = process_args(original_args);
-
-    if let Some(first_arg_index) = cleaned_args.iter().position(|arg| !arg.starts_with('-')) {
-        cleaned_args[first_arg_index] = "rex-viewer".to_string();
-    }
-    let args = StandaloneArgs::parse_from(cleaned_args);
-
+pub fn cli_standalone(args: StandaloneArgs) {
     let log_level = match args.verbosity {
         0 => LevelFilter::Error,
         1 => LevelFilter::Warn,
@@ -579,7 +600,7 @@ pub fn cli_standalone() {
     };
 }
 
-fn process_args(original_args: Vec<String>) -> Vec<String> {
+pub fn process_args(original_args: Vec<String>) -> Vec<String> {
     //used for removing python inserted args when rex is invoked from a python script
     let cleaned_args = original_args
         .into_iter()
