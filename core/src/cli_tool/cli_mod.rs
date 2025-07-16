@@ -22,22 +22,22 @@ use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
-
-#[derive(Parser)]
-#[command(name = "rex")]
+/// A commandline experiment management tool
+#[derive(Parser, Debug)]
+#[command(name = "rex",version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum Commands {
     Run(RunArgs),
     View(StandaloneArgs),
     // Future: Serve(ServeArgs),
 }
 
-/// A commandline experiment manager
+/// A commandline experiment runner
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct RunArgs {
