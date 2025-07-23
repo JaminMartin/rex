@@ -5,6 +5,8 @@ use crate::tui_tool::run_tui;
 use clap::{Parser, Subcommand};
 use env_logger::{Builder, Target};
 use log::LevelFilter;
+use serde::{Deserialize, Serialize};
+
 use std::env;
 use std::fmt::Debug;
 use std::io;
@@ -14,18 +16,51 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
-//use time::format_description::well_known::iso8601::Config;
+use uuid::Uuid;
+
 use std::net::TcpListener;
+use std::sync::Once;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
+
+static LOGGER_INIT: Once = Once::new();
+
+pub fn init_logger(log_level: LevelFilter, interactive: bool) {
+    LOGGER_INIT.call_once(|| {
+        if interactive {
+            let _ = tui_logger::init_logger(log_level);
+        } else {
+            let mut builder = Builder::new();
+            builder
+                .filter_level(log_level)
+                .target(Target::Stdout)
+                .format_timestamp_secs();
+            let _ = builder.try_init(); // Use try_init to be safe
+        }
+    });
+}
+
+pub fn get_log_level(verbosity: u8) -> LevelFilter {
+    match verbosity {
+        0 => LevelFilter::Error,
+        1 => LevelFilter::Warn,
+        2 => LevelFilter::Info,
+        3 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    }
+}
+
 /// A commandline experiment management tool
 #[derive(Parser, Debug)]
 #[command(name = "rex",version, about, long_about = None)]
 pub struct Cli {
+    /// desired log level, info displays summary of connected instruments & recent data. debug will include all data, including standard output from Python.
+    #[arg(short, long, default_value_t = 2)]
+    pub verbosity: u8,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -34,43 +69,61 @@ pub struct Cli {
 pub enum Commands {
     Run(RunArgs),
     View(StandaloneArgs),
-    // Future: Serve(ServeArgs),
+    Serve(ServeArgs),
 }
 
 /// A commandline experiment runner
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone, Deserialize, Serialize)]
 #[command(version, about, long_about = None)]
 pub struct RunArgs {
-    /// desired log level, info displays summary of connected instruments & recent data. debug will include all data, including standard output from Python.
-    #[arg(short, long, default_value_t = 2)]
-    verbosity: u8,
     /// Email address to receive results
     #[arg(short, long)]
     email: Option<String>,
     /// Time delay in minutes before starting the experiment
     #[arg(short, long, default_value_t = 0)]
+    #[serde(default = "default_delay")]
     delay: u64,
     /// Number of times to loop the experiment
     #[arg(short, long, default_value_t = 1)]
+    #[serde(default = "default_loops")]
     loops: u8,
     /// Path to script containing the experimental setup / control flow
     #[arg(short, long)]
     path: PathBuf,
     /// Dry run, will not log data. Can be used for long term monitoring
     #[arg(short = 'n', long, default_value_t = false)]
+    #[serde(default = "default_dry_run")]
     dry_run: bool,
     /// Target directory for output path
     #[arg(short, long, default_value_t = get_current_dir())]
     output: String,
     /// Enable interactive TUI mode
     #[arg(short, long)]
-    interactive: bool,
+    #[serde(default = "default_interactive")]
+    pub interactive: bool,
     /// Port overide, allows for overiding default port. Will export this as environment variable for devices to utilise.
     #[arg(short = 'P', long)]
     port: Option<String>,
     /// Optional path to config file used by experiment script. Useful when it is critical the script goes unmodified.,
     #[arg(short, long)]
     config: Option<String>,
+    // Additional metadata that will be stored as part of the run
+    #[arg(long, value_name = "JSON")]
+    pub meta_json: Option<String>,
+}
+
+const fn default_delay() -> u64 {
+    0
+}
+const fn default_dry_run() -> bool {
+    false
+}
+const fn default_loops() -> u8 {
+    1
+}
+
+const fn default_interactive() -> bool {
+    false
 }
 /// A commandline experiment viewer
 #[derive(Parser, Debug)]
@@ -84,7 +137,21 @@ pub struct StandaloneArgs {
     #[arg(short, long, default_value_t = 2)]
     verbosity: u8,
 }
+
+/// A commandline experiment server
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+pub struct ServeArgs {
+    // Port the current experiment is running on. If you are running this on the same device it will be 127.0.0.1:7676
+    // otherwise, please use the devices IP , device_ip:7676
+    #[arg(short, long, default_value_t = 9000)]
+    pub address: u32,
+    /// desired log level, info displays summary of connected instruments & recent data. debug will include all data, including standard output from Python.
+    #[arg(short, long, default_value_t = 2)]
+    pub verbosity: u8,
+}
 // Wrapper for generating python bindings for rex for direct inclusion with other downstream packages.
+// THIS IS STILL COMPLETELY UNTESTED!
 #[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
 pub fn cli_parser_py() {
     let original_args: Vec<String> = std::env::args().collect();
@@ -95,36 +162,32 @@ pub fn cli_parser_py() {
     args_with_subcommand.extend(cleaned_args.into_iter().skip(1));
 
     let cli = Cli::parse_from(args_with_subcommand);
-
+    let uuid = Uuid::new_v4();
     match cli.command {
         Commands::Run(args) => {
             let (shutdown_tx, _) = broadcast::channel(1);
-            run_experiment(args, shutdown_tx);
+            let log_level = get_log_level(cli.verbosity);
+            init_logger(log_level, args.interactive);
+            run_experiment(args, shutdown_tx, log_level, uuid);
         }
-        Commands::View(args) => cli_standalone(args),
-        // Future: Commands::Serve(args) => run_server(args),
+        Commands::View(args) => {
+            let log_level = get_log_level(cli.verbosity);
+            cli_standalone(args, log_level)
+        }
+        Commands::Serve(_args) => {
+            log::info!("Running as a server is not yet supported for python instances")
+        }
     }
 }
 // Core CLI tool used for both rex adn rex-py
-pub fn run_experiment(args: RunArgs, shutdown_tx: broadcast::Sender<()>) {
-    let log_level = match args.verbosity {
-        0 => LevelFilter::Error,
-        1 => LevelFilter::Warn,
-        2 => LevelFilter::Info,
-        3 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
-    };
-    if args.interactive {
-        let _ = tui_logger::init_logger(log_level);
-    } else {
-        let mut builder = Builder::new();
-        builder
-            .filter_level(log_level)
-            .target(Target::Stdout)
-            .format_timestamp_secs();
-        builder.init();
-    };
+pub fn run_experiment(
+    args: RunArgs,
+    shutdown_tx: broadcast::Sender<()>,
+    log_level: LevelFilter,
+    uuid: Uuid,
+) {
     log::info!("Experiment starting in {} s", args.delay * 60);
+
     sleep(Duration::from_secs(&args.delay * 60));
     let interpreter_path_str = match get_configuration() {
         Ok(conf) => match conf.general.interpreter {
@@ -140,13 +203,21 @@ pub fn run_experiment(args: RunArgs, shutdown_tx: broadcast::Sender<()>) {
     let script_path = Arc::new(args.path);
     let interpreter_path_loop = Arc::clone(&interpreter_path);
     let output_path = Arc::new(args.output);
+    let additional_metadata = match args.meta_json {
+        Some(meta) => meta,
+        None => String::new(),
+    };
+
     if !interpreter_path_loop.is_empty() {
         for _ in 0..args.loops {
             let interpreter_path_clone = Arc::clone(&interpreter_path);
             let script_path_clone = Arc::clone(&script_path);
             log::info!("Server is starting...");
 
-            let state = Arc::new(Mutex::new(ServerState::new()));
+            let state = Arc::new(Mutex::new(ServerState::new(
+                uuid,
+                additional_metadata.clone(),
+            )));
 
             let shutdown_rx_tcp = shutdown_tx.subscribe();
             let shutdown_rx_server_satus = shutdown_tx.subscribe();
@@ -554,15 +625,7 @@ async fn start_interpreter_process_async(
 }
 
 #[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
-pub fn cli_standalone(args: StandaloneArgs) {
-    let log_level = match args.verbosity {
-        0 => LevelFilter::Error,
-        1 => LevelFilter::Warn,
-        2 => LevelFilter::Info,
-        3 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
-    };
-
+pub fn cli_standalone(args: StandaloneArgs, log_level: LevelFilter) {
     let _ = tui_logger::init_logger(log_level);
 
     let tui_thread = Some(thread::spawn(move || {

@@ -86,6 +86,8 @@ impl Experiment {
             email: self.info.email.clone(),
             experiment_name: self.info.experiment_name.clone(),
             experiment_description: self.info.experiment_description.clone(),
+            experiment_meta: serde_json::to_string(&self.info.meta)
+                .expect("Cannot unwrap config into valid json"),
         };
         Some(exp)
     }
@@ -107,21 +109,18 @@ pub struct ExperimentInfo {
     pub email: String,
     pub experiment_name: String,
     pub experiment_description: String,
+    pub meta: Option<ExperimentMeta>,
+}
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct ExperimentMeta {
+    #[serde(flatten)]
+    pub meta: HashMap<String, Value>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MeasurementData {
     Single(Vec<f64>),
     Multi(Vec<Vec<f64>>),
-}
-#[cfg(feature = "extension-module")]
-impl IntoPy<PyObject> for MeasurementData {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        match self {
-            MeasurementData::Single(values) => values.into_py(py),
-            MeasurementData::Multi(arrays) => arrays.into_py(py),
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -361,15 +360,18 @@ pub struct ServerState {
     pub internal_state: bool,
     pub retention: bool,
     pub uuid: Uuid,
+    pub external_metadata: Option<HashMap<String, Value>>,
 }
 
 impl ServerState {
-    pub fn new() -> Self {
+    pub fn new(uuid: Uuid, external_metadata: String) -> Self {
+        let external_metadata = parse_external_metadata(external_metadata);
         ServerState {
             entities: HashMap::new(),
             internal_state: true,
             retention: true,
-            uuid: Uuid::new_v4(),
+            uuid,
+            external_metadata,
         }
     }
 
@@ -387,7 +389,21 @@ impl ServerState {
             },
             Entity::ExperimentSetup(experiment_setup) => match self.entities.entry(key) {
                 Entry::Vacant(entry) => {
-                    let experiment = Experiment::new(experiment_setup.info, self.uuid);
+                    let mut experiment = Experiment::new(experiment_setup.info, self.uuid);
+
+                    if let Some(external_meta) = &self.external_metadata {
+                        if let Some(ref mut existing_meta) = experiment.info.meta {
+                            for (key, value) in external_meta {
+                                existing_meta.meta.insert(key.clone(), value.clone());
+                            }
+                        } else {
+                            let meta_struct = ExperimentMeta {
+                                meta: external_meta.clone(),
+                            };
+                            experiment.info.meta = Some(meta_struct);
+                        }
+                    }
+
                     entry.insert(Entity::ExperimentSetup(experiment));
                 }
                 Entry::Occupied(_) => {
@@ -419,6 +435,7 @@ impl ServerState {
     }
 
     pub fn print_state(&self) {
+        // To be deprecated or put behind a feature flag / or similified for tokio instrumentation + Otel
         log::info!("=== Current Server State ===");
         if self.entities.is_empty() {
             log::info!("No devices connected.");
@@ -512,7 +529,25 @@ impl ServerState {
                         "experiment_description".to_string(),
                         Value::String(exeperimentsetup.info.experiment_description.clone()),
                     );
-
+                    if let Some(ref meta) = exeperimentsetup.info.meta {
+                        let mut meta_table = Table::new();
+                        for (key, value) in &meta.meta {
+                            let toml_value = match value {
+                                Value::String(s) => Value::String(s.clone()),
+                                Value::Float(n) => Value::Float(n.clone()),
+                                Value::Integer(i) => Value::Integer(i.clone()),
+                                Value::Boolean(b) => Value::Boolean(b.clone()),
+                                Value::Array(arr) => {
+                                    let array_values: Vec<Value> =
+                                        arr.iter().map(|v| Value::String(v.to_string())).collect();
+                                    Value::Array(array_values)
+                                }
+                                _ => Value::String(value.to_string()),
+                            };
+                            meta_table.insert(key.clone(), toml_value);
+                        }
+                        experiment_config.insert("meta".to_string(), Value::Table(meta_table));
+                    }
                     experiment_table.insert("info".to_string(), Value::Table(experiment_config));
                 }
 
@@ -674,7 +709,9 @@ impl ServerState {
 
 impl Default for ServerState {
     fn default() -> Self {
-        Self::new()
+        let uuid = Uuid::new_v4();
+        let external_metadata = "".to_string();
+        Self::new(uuid, external_metadata)
     }
 }
 pub fn sanitize_filename(name: String) -> String {
@@ -722,9 +759,27 @@ pub fn create_log_timestamp() -> String {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap()
 }
+#[derive(Debug, Clone)]
+pub enum MeasurementDataPy {
+    Single(Vec<f64>),
+    Multi(Vec<Vec<f64>>),
+    Timestamps(Vec<String>),
+}
 
+#[cfg(feature = "extension-module")]
+impl IntoPy<PyObject> for MeasurementDataPy {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        match self {
+            MeasurementDataPy::Single(values) => values.into_py(py),
+            MeasurementDataPy::Multi(arrays) => arrays.into_py(py),
+            MeasurementDataPy::Timestamps(values) => values.into_py(py),
+        }
+    }
+}
 #[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
-pub fn load_experimental_data(filename: &str) -> HashMap<String, HashMap<String, MeasurementData>> {
+pub fn load_experimental_data(
+    filename: &str,
+) -> HashMap<String, HashMap<String, MeasurementDataPy>> {
     let content = fs::read_to_string(filename).expect("Failed to read the TOML file");
     let toml_data: Value = content.parse().expect("Failed to parse the TOML file");
     let mut data_dict = HashMap::new();
@@ -733,13 +788,13 @@ pub fn load_experimental_data(filename: &str) -> HashMap<String, HashMap<String,
         if let Some(Value::Table(devices)) = table.get("device") {
             for (device_name, device_content) in devices {
                 if let Value::Table(inner_table) = device_content {
+                    let mut data_map = HashMap::new();
+
+                    // Extract data (your existing code)
                     if let Some(Value::Table(data_table)) = inner_table.get("data") {
-                        let mut data_map = HashMap::new();
                         for (key, value) in data_table {
                             if let Value::Array(outer_array) = value {
-                                // Check if we have a nested array structure
                                 if !outer_array.is_empty() && outer_array[0].is_array() {
-                                    // Handle nested arrays (Multi case)
                                     let nested_data: Vec<Vec<f64>> = outer_array
                                         .iter()
                                         .filter_map(|inner_val| {
@@ -759,23 +814,39 @@ pub fn load_experimental_data(filename: &str) -> HashMap<String, HashMap<String,
                                         })
                                         .collect();
                                     data_map
-                                        .insert(key.clone(), MeasurementData::Multi(nested_data));
+                                        .insert(key.clone(), MeasurementDataPy::Multi(nested_data));
                                 } else {
-                                    // Handle flat arrays (Single case)
                                     let data_array: Vec<f64> =
                                         outer_array.iter().filter_map(|v| v.as_float()).collect();
                                     data_map
-                                        .insert(key.clone(), MeasurementData::Single(data_array));
+                                        .insert(key.clone(), MeasurementDataPy::Single(data_array));
                                 }
                             }
                         }
-                        data_dict.insert(device_name.clone(), data_map);
                     }
+
+                    // Extract timestamps and add with "_t" suffix
+                    if let Some(Value::Table(timestamps_table)) = inner_table.get("timestamps") {
+                        for (key, value) in timestamps_table {
+                            if let Value::Array(arr) = value {
+                                let time_strings: Vec<String> = arr
+                                    .iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect();
+                                let timestamp_key = format!("{}_t", key);
+                                data_map.insert(
+                                    timestamp_key,
+                                    MeasurementDataPy::Timestamps(time_strings),
+                                );
+                            }
+                        }
+                    }
+
+                    data_dict.insert(device_name.clone(), data_map);
                 }
             }
         }
     }
-
     data_dict
 }
 fn div_ceil(a: usize, b: usize) -> usize {
@@ -833,4 +904,11 @@ pub fn configurable_dir_path(
         .ok()
         .and_then(|path| PathBuf::try_from(path).ok())
         .or_else(|| dir())
+}
+fn parse_external_metadata(meta_data: String) -> Option<HashMap<String, Value>> {
+    let metadata = match serde_json::from_str(&meta_data) {
+        Ok(meta) => meta,
+        Err(_) => None,
+    };
+    metadata
 }

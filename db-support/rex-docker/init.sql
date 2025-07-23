@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS experiment_info (
     name String,
     email String,
     experiment_name String,
-    experiment_description String
+    experiment_description String,
+    experiment_meta JSON
 ) ENGINE = MergeTree ORDER BY experiment_id;
 
 -- Create measurement data that links to the experiment ID

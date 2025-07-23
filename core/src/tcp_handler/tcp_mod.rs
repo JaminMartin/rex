@@ -67,7 +67,7 @@ async fn handle_connection(
                     continue;
                 }
 
-                log::trace!("Raw data stream:{}", trimmed);
+                log::debug!("Raw data stream:{}", trimmed);
                 match trimmed {
                     "GET_DATASTREAM" => {
                         let state = state.lock().await;

@@ -24,6 +24,7 @@ pub struct ExperimentClickhouse {
     pub email: String,
     pub experiment_name: String,
     pub experiment_description: String,
+    pub experiment_meta: String,
 }
 
 #[derive(Debug, Row, Clone, Serialize)]
