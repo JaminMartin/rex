@@ -7,8 +7,15 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ rust-overlay.overlays.default ];
         pkgs = import nixpkgs {
@@ -17,9 +24,13 @@
         };
 
         rust = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "rust-analyzer" ];
+          extensions = [
+            "rust-src"
+            "rust-analyzer"
+          ];
         };
-      in {
+      in
+      {
         devShells.default = pkgs.mkShell {
           packages = [
             rust
@@ -27,8 +38,18 @@
             pkgs.pkg-config
             pkgs.systemd
             pkgs.openssl
+            pkgs.zlib
+            pkgs.stdenv.cc.cc.lib
           ];
-        };
-      });
-}
+          shellHook = ''
+            export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${pkgs.zlib}/lib:${pkgs.stdenv.cc.cc.lib}/lib
+          '';
 
+        };
+        packages.default = pkgs.callPackage ./default.nix { };
+
+        # For backward compatibility
+        packages.rex = self.packages.${system}.default;
+      }
+    );
+}
