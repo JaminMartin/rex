@@ -48,7 +48,6 @@
         };
         packages.default = pkgs.callPackage ./default.nix { };
 
-        # For backward compatibility
         packages.rex = self.packages.${system}.default;
       }
     );

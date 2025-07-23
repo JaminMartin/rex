@@ -6,18 +6,21 @@
   systemd,
   zlib,
   stdenv,
+  makeWrapper,
 }:
 
 rustPlatform.buildRustPackage rec {
   pname = "rex";
-  version = "0.9.5"; # Update as needed
+  version = "0.9.5";
 
   src = ./.;
 
-  cargoHash = ""; # Run nix build first, it will tell you the correct hash
+  cargoHash = "sha256-AGh1y89TpEWcz86KiaIRReBm7fLbG+sHBValhdsS3m4=";
 
   nativeBuildInputs = [
     pkg-config
+    makeWrapper
+
   ];
 
   buildInputs = [
@@ -25,9 +28,9 @@ rustPlatform.buildRustPackage rec {
     systemd
     zlib
     stdenv.cc.cc.lib
+
   ];
 
-  # Set up runtime environment
   postInstall = ''
     wrapProgram $out/bin/rex \
       --set LD_LIBRARY_PATH "${
@@ -40,8 +43,8 @@ rustPlatform.buildRustPackage rec {
 
   meta = with lib; {
     description = "Rex, the rust experiment manager";
-    homepage = "https://github.com/yourusername/rex"; # Update this
-    license = licenses.gpl3; # Update as appropriate
+    homepage = "https://github.com/yourusername/rex";
+    license = licenses.gpl3;
     maintainers = with maintainers; [
       Jamin
       Martin
