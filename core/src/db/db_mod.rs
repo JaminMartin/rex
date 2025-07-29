@@ -33,6 +33,7 @@ pub struct ClickhouseMeasurementPrimative {
     pub experiment_id: Uuid,
     pub device_name: String,
     pub channel_name: String,
+    pub channel_unit: String,
     pub sample_index: u32,
     pub channel_index: u32,
     pub value: f64,

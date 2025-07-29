@@ -1,5 +1,3 @@
-#[cfg(feature = "extension-module")]
-use pyo3::prelude::{IntoPy, PyObject, Python};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -53,7 +51,7 @@ pub struct Listner {
     pub id: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Experiment {
     pub start_time: Option<String>,
     pub end_time: Option<String>,
@@ -103,7 +101,7 @@ impl Default for Experiment {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct ExperimentInfo {
     pub name: String,
     pub email: String,
@@ -111,7 +109,7 @@ pub struct ExperimentInfo {
     pub experiment_description: String,
     pub meta: Option<ExperimentMeta>,
 }
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct ExperimentMeta {
     #[serde(flatten)]
     pub meta: HashMap<String, Value>,
@@ -122,12 +120,16 @@ pub enum MeasurementData {
     Single(Vec<f64>),
     Multi(Vec<Vec<f64>>),
 }
-
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Measurement {
+    pub data: MeasurementData,
+    pub unit: String,
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Device {
     pub device_name: String,
     pub device_config: HashMap<String, Value>,
-    pub measurements: HashMap<String, MeasurementData>,
+    pub measurements: HashMap<String, Measurement>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     #[serde(default)]
     pub timestamps: HashMap<String, Vec<String>>,
@@ -140,32 +142,50 @@ pub struct DeviceData {
 impl Device {
     fn update(&mut self, other: Self) {
         let timestamp = vec![create_log_timestamp()];
-        for (measure_type, values) in other.measurements {
+        for (measure_type, measurement) in other.measurements {
             match self.measurements.entry(measure_type.clone()) {
-                Entry::Occupied(mut entry) => match (entry.get_mut(), &values) {
-                    (MeasurementData::Single(existing), MeasurementData::Single(new_values)) => {
-                        existing.extend(new_values.clone());
+                Entry::Occupied(mut entry) => {
+                    let existing_measurement = entry.get_mut();
 
-                        if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
-                            if let Some(other_timestamps) = other.timestamps.get(&measure_type) {
-                                ts_vec.extend(other_timestamps.clone());
+                    if existing_measurement.unit != measurement.unit {
+                        log::error!(
+                            "Unit mismatch for '{}': existing '{}' vs new '{}'",
+                            measure_type,
+                            existing_measurement.unit,
+                            measurement.unit
+                        );
+                        continue;
+                    }
+
+                    match (&mut existing_measurement.data, &measurement.data) {
+                        (
+                            MeasurementData::Single(existing),
+                            MeasurementData::Single(new_values),
+                        ) => {
+                            existing.extend(new_values.clone());
+                            if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
+                                if let Some(other_timestamps) = other.timestamps.get(&measure_type)
+                                {
+                                    ts_vec.extend(other_timestamps.clone());
+                                }
                             }
                         }
-                    }
-                    (MeasurementData::Multi(existing), MeasurementData::Multi(new_values)) => {
-                        existing.extend(new_values.clone());
-                        if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
-                            if let Some(other_timestamps) = other.timestamps.get(&measure_type) {
-                                ts_vec.extend(other_timestamps.clone());
+                        (MeasurementData::Multi(existing), MeasurementData::Multi(new_values)) => {
+                            existing.extend(new_values.clone());
+                            if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
+                                if let Some(other_timestamps) = other.timestamps.get(&measure_type)
+                                {
+                                    ts_vec.extend(other_timestamps.clone());
+                                }
                             }
                         }
+                        _ => {
+                            log::error!("Measurement type mismatch during update for '{measure_type}' - cannot change between Single and Multi variants");
+                        }
                     }
-                    _ => {
-                        log::error!("Measurement type mismatch during update for '{}' - cannot change between Single and Multi variants", entry.key());
-                    }
-                },
+                }
                 Entry::Vacant(entry) => {
-                    entry.insert(values);
+                    entry.insert(measurement);
                     self.timestamps.insert(measure_type, timestamp.clone());
                 }
             }
@@ -176,8 +196,8 @@ impl Device {
         let truncated_measurements = self
             .measurements
             .iter()
-            .map(|(key, values)| {
-                let truncated = match values {
+            .map(|(key, measurement)| {
+                let truncated = match &measurement.data {
                     MeasurementData::Single(single_values) => single_values
                         .iter()
                         .rev()
@@ -207,14 +227,13 @@ impl Device {
                 (key.clone(), truncated)
             })
             .collect();
-
         truncated_measurements
     }
     fn latest_timestamps_truncated(&self, max_measurements: usize) -> HashMap<String, Vec<f64>> {
         self.timestamps
             .iter()
             .filter_map(|(key, values)| {
-                let base_time = values.get(0).and_then(|s| {
+                let base_time = values.first().and_then(|s| {
                     OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
                 })?;
 
@@ -253,7 +272,7 @@ impl Device {
     pub fn truncate(&mut self) {
         self.measurements
             .iter_mut()
-            .for_each(|(_, values)| match values {
+            .for_each(|(_, measurement)| match &mut measurement.data {
                 MeasurementData::Single(single_values) => {
                     let len = single_values.len();
                     if len > 100 {
@@ -296,7 +315,7 @@ impl Device {
         let measurements = self
             .measurements
             .iter()
-            .flat_map(|(channel_name, values)| match values {
+            .flat_map(|(channel_name, measurement)| match &measurement.data {
                 MeasurementData::Single(single_values) => single_values
                     .iter()
                     .enumerate()
@@ -304,6 +323,7 @@ impl Device {
                         experiment_id: id,
                         device_name: self.device_name.clone(),
                         channel_name: channel_name.clone(),
+                        channel_unit: measurement.unit.clone(),
                         sample_index: i as u32,
                         channel_index: 0,
                         value: v,
@@ -320,10 +340,12 @@ impl Device {
                     .flat_map(|(i, v)| {
                         v.iter().enumerate().map({
                             let ts_value = parsed_timestamps.clone();
+                            let unit = measurement.unit.clone();
                             move |(j, &vv)| ClickhouseMeasurementPrimative {
                                 experiment_id: id,
                                 device_name: self.device_name.clone(),
                                 channel_name: channel_name.clone(),
+                                channel_unit: unit.clone(),
                                 sample_index: j as u32,
                                 channel_index: i as u32,
                                 value: vv,
@@ -338,7 +360,6 @@ impl Device {
                     .collect::<Vec<_>>(),
             })
             .collect::<Vec<_>>();
-
         Some(ClickhouseMeasurements { measurements })
     }
 
@@ -362,6 +383,10 @@ pub struct ServerState {
     pub uuid: Uuid,
     pub external_metadata: Option<HashMap<String, Value>>,
 }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Summary {
+    pub entities: Experiment,
+}
 
 impl ServerState {
     pub fn new(uuid: Uuid, external_metadata: String) -> Self {
@@ -374,7 +399,20 @@ impl ServerState {
             external_metadata,
         }
     }
+    pub fn to_summary(&self) -> Option<Summary> {
+        let entity = self
+            .entities
+            .iter()
+            .filter_map(|(_, entity)| match entity {
+                Entity::ExperimentSetup(experiment) => Some(experiment),
+                Entity::Device(_) => None,
+            })
+            .next()?;
 
+        Some(Summary {
+            entities: entity.clone(),
+        })
+    }
     pub fn update_entity(&mut self, key: String, incoming: Entity) {
         match incoming {
             Entity::Device(incoming_device) => match self.entities.entry(key) {
@@ -412,12 +450,12 @@ impl ServerState {
             },
         }
 
-        if self.retention == false {
+        if !self.retention {
             self.truncate_data();
         };
     }
     pub fn truncate_data(&mut self) {
-        for (_, value) in &mut self.entities {
+        for value in self.entities.values_mut() {
             match value {
                 Entity::Device(device_data) => {
                     device_data.truncate();
@@ -448,7 +486,7 @@ impl ServerState {
                     let total_measurements: usize = device
                         .measurements
                         .values()
-                        .map(|v| match v {
+                        .map(|v| match &v.data {
                             MeasurementData::Single(data) => data.len(),
                             MeasurementData::Multi(data) => data.len(),
                         })
@@ -457,7 +495,7 @@ impl ServerState {
                     let last_measurement = device
                         .measurements
                         .values()
-                        .flat_map(|v| match v {
+                        .flat_map(|v| match &v.data {
                             MeasurementData::Single(data) => vec![data.last().cloned()],
                             MeasurementData::Multi(data) => {
                                 vec![data.last().and_then(|inner| inner.last().cloned())]
@@ -534,9 +572,9 @@ impl ServerState {
                         for (key, value) in &meta.meta {
                             let toml_value = match value {
                                 Value::String(s) => Value::String(s.clone()),
-                                Value::Float(n) => Value::Float(n.clone()),
-                                Value::Integer(i) => Value::Integer(i.clone()),
-                                Value::Boolean(b) => Value::Boolean(b.clone()),
+                                Value::Float(n) => Value::Float(*n),
+                                Value::Integer(i) => Value::Integer(*i),
+                                Value::Boolean(b) => Value::Boolean(*b),
                                 Value::Array(arr) => {
                                     let array_values: Vec<Value> =
                                         arr.iter().map(|v| Value::String(v.to_string())).collect();
@@ -572,11 +610,15 @@ impl ServerState {
                     }
 
                     let mut data_table = Table::new();
-                    for (measurement_type, values) in &device.measurements {
-                        match values {
+                    for (measurement_type, measurement) in &device.measurements {
+                        let mut measurement_obj = Table::new();
+                        measurement_obj
+                            .insert("unit".to_string(), Value::String(measurement.unit.clone()));
+
+                        match &measurement.data {
                             MeasurementData::Single(single_values) => {
-                                data_table.insert(
-                                    measurement_type.clone(),
+                                measurement_obj.insert(
+                                    "data".to_string(),
                                     Value::Array(
                                         single_values.iter().map(|&v| Value::Float(v)).collect(),
                                     ),
@@ -591,11 +633,12 @@ impl ServerState {
                                         )
                                     })
                                     .collect();
-
-                                data_table
-                                    .insert(measurement_type.clone(), Value::Array(nested_arrays));
+                                measurement_obj
+                                    .insert("data".to_string(), Value::Array(nested_arrays));
                             }
                         }
+
+                        data_table.insert(measurement_type.clone(), Value::Table(measurement_obj));
                     }
                     let mut time_stamps = Table::new();
                     for (measurement_type, values) in &device.timestamps {
@@ -611,7 +654,7 @@ impl ServerState {
             }
         }
         let toml_string = toml::to_string_pretty(&root)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         fs::write(file_path, toml_string.clone())?;
         let tmp_dir = env::temp_dir();
         let temp_path = tmp_dir.join("rex.toml");
@@ -759,98 +802,9 @@ pub fn create_log_timestamp() -> String {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap()
 }
-#[derive(Debug, Clone)]
-pub enum MeasurementDataPy {
-    Single(Vec<f64>),
-    Multi(Vec<Vec<f64>>),
-    Timestamps(Vec<String>),
-}
 
-#[cfg(feature = "extension-module")]
-impl IntoPy<PyObject> for MeasurementDataPy {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        match self {
-            MeasurementDataPy::Single(values) => values.into_py(py),
-            MeasurementDataPy::Multi(arrays) => arrays.into_py(py),
-            MeasurementDataPy::Timestamps(values) => values.into_py(py),
-        }
-    }
-}
-#[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
-pub fn load_experimental_data(
-    filename: &str,
-) -> HashMap<String, HashMap<String, MeasurementDataPy>> {
-    let content = fs::read_to_string(filename).expect("Failed to read the TOML file");
-    let toml_data: Value = content.parse().expect("Failed to parse the TOML file");
-    let mut data_dict = HashMap::new();
-
-    if let Value::Table(table) = toml_data {
-        if let Some(Value::Table(devices)) = table.get("device") {
-            for (device_name, device_content) in devices {
-                if let Value::Table(inner_table) = device_content {
-                    let mut data_map = HashMap::new();
-
-                    // Extract data (your existing code)
-                    if let Some(Value::Table(data_table)) = inner_table.get("data") {
-                        for (key, value) in data_table {
-                            if let Value::Array(outer_array) = value {
-                                if !outer_array.is_empty() && outer_array[0].is_array() {
-                                    let nested_data: Vec<Vec<f64>> = outer_array
-                                        .iter()
-                                        .filter_map(|inner_val| {
-                                            if let Value::Array(inner_array) = inner_val {
-                                                let inner_vec: Vec<f64> = inner_array
-                                                    .iter()
-                                                    .filter_map(|v| v.as_float())
-                                                    .collect();
-                                                if !inner_vec.is_empty() {
-                                                    Some(inner_vec)
-                                                } else {
-                                                    None
-                                                }
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect();
-                                    data_map
-                                        .insert(key.clone(), MeasurementDataPy::Multi(nested_data));
-                                } else {
-                                    let data_array: Vec<f64> =
-                                        outer_array.iter().filter_map(|v| v.as_float()).collect();
-                                    data_map
-                                        .insert(key.clone(), MeasurementDataPy::Single(data_array));
-                                }
-                            }
-                        }
-                    }
-
-                    // Extract timestamps and add with "_t" suffix
-                    if let Some(Value::Table(timestamps_table)) = inner_table.get("timestamps") {
-                        for (key, value) in timestamps_table {
-                            if let Value::Array(arr) = value {
-                                let time_strings: Vec<String> = arr
-                                    .iter()
-                                    .filter_map(|v| v.as_str().map(String::from))
-                                    .collect();
-                                let timestamp_key = format!("{}_t", key);
-                                data_map.insert(
-                                    timestamp_key,
-                                    MeasurementDataPy::Timestamps(time_strings),
-                                );
-                            }
-                        }
-                    }
-
-                    data_dict.insert(device_name.clone(), data_map);
-                }
-            }
-        }
-    }
-    data_dict
-}
 fn div_ceil(a: usize, b: usize) -> usize {
-    (a + b - 1) / b
+    a.div_ceil(b)
 }
 
 pub fn get_configuration() -> Result<Configuration, String> {
@@ -864,7 +818,7 @@ pub fn get_configuration() -> Result<Configuration, String> {
     let conf = match config_path {
         Ok(path) => path,
         Err(res) => {
-            log::error!("{}", res);
+            log::error!("{res}");
             return Err(res.to_string());
         }
     };
@@ -874,8 +828,7 @@ pub fn get_configuration() -> Result<Configuration, String> {
         Ok(contents) => toml::from_str(&contents),
         Err(e) => {
             log::error!(
-                "Could not read config.toml file, raised the following error: {}",
-                e
+                "Could not read config.toml file, raised the following error: {e}"
             );
             return Err(e.to_string());
         }
@@ -884,8 +837,7 @@ pub fn get_configuration() -> Result<Configuration, String> {
         Ok(config) => config,
         Err(e) => {
             log::error!(
-                "Could not read config.toml file, raised the following error: {}",
-                e
+                "Could not read config.toml file, raised the following error: {e}"
             );
 
             return Err(e.to_string());
@@ -903,12 +855,12 @@ pub fn configurable_dir_path(
     std::env::var(env_var)
         .ok()
         .and_then(|path| PathBuf::try_from(path).ok())
-        .or_else(|| dir())
+        .or_else(dir)
 }
 fn parse_external_metadata(meta_data: String) -> Option<HashMap<String, Value>> {
-    let metadata = match serde_json::from_str(&meta_data) {
+    
+    match serde_json::from_str(&meta_data) {
         Ok(meta) => meta,
         Err(_) => None,
-    };
-    metadata
+    }
 }

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS measurement_data (
     experiment_id UUID,
     device_name String,
     channel_name String,
+    channel_unit String,
     sample_index UInt32,
     channel_index UInt32,
     value Float64,
