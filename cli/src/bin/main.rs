@@ -29,7 +29,7 @@ async fn main() {
                 if let Ok(()) = ctrl_c().await {
                     if !shutting_down_clone.load(Ordering::SeqCst) {
                         shutting_down_clone.store(true, Ordering::SeqCst);
-                        if let Err(_) = shutdown_tx_clone.send(()) {}
+                        if shutdown_tx_clone.send(()).is_err() {}
                     }
                 }
             });
@@ -38,7 +38,7 @@ async fn main() {
                 run_experiment(args, shutdown_tx, log_level, uuid);
             });
 
-            if let Err(_) = cli_thread.join() {}
+            if cli_thread.join().is_err() {}
         }
         Commands::View(args) => {
             let log_level = get_log_level(cli.verbosity);
@@ -59,7 +59,7 @@ async fn main() {
                 if let Ok(()) = ctrl_c().await {
                     if !shutting_down_clone.load(Ordering::SeqCst) {
                         shutting_down_clone.store(true, Ordering::SeqCst);
-                        if let Err(_) = shutdown_tx_clone.send(()) {}
+                        if shutdown_tx_clone.send(()).is_err() {}
                     }
                 }
             });

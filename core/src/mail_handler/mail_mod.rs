@@ -14,11 +14,11 @@ pub fn mailer(email_adr: Option<&String>, file_path: &String) {
                 }
             },
             Err(e) => {
-                log::error!("failed to get configuration due to: {}", e);
+                log::error!("failed to get configuration due to: {e}");
                 return;
             }
         };
-        let filename = get_filename_from_path(&file_path);
+        let filename = get_filename_from_path(file_path);
         let filebody = fs::read(file_path).expect("Cant find file!");
         let content_type = ContentType::parse("text/plain").unwrap();
         let attachment = Attachment::new(filename.clone()).body(filebody, content_type);

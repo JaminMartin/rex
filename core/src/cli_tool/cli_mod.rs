@@ -103,7 +103,7 @@ pub struct RunArgs {
     pub interactive: bool,
     /// Port overide, allows for overiding default port. Will export this as environment variable for devices to utilise.
     #[arg(short = 'P', long)]
-    port: Option<String>,
+    pub port: Option<String>,
     /// Optional path to config file used by experiment script. Useful when it is critical the script goes unmodified.,
     #[arg(short, long)]
     config: Option<String>,
@@ -194,7 +194,7 @@ pub fn run_experiment(
             interpreter => interpreter,
         },
         Err(e) => {
-            log::error!("failed to get configuration due to: {}", e);
+            log::error!("failed to get configuration due to: {e}");
             return;
         }
     };
@@ -203,10 +203,7 @@ pub fn run_experiment(
     let script_path = Arc::new(args.path);
     let interpreter_path_loop = Arc::clone(&interpreter_path);
     let output_path = Arc::new(args.output);
-    let additional_metadata = match args.meta_json {
-        Some(meta) => meta,
-        None => String::new(),
-    };
+    let additional_metadata = args.meta_json.unwrap_or_default();
 
     if !interpreter_path_loop.is_empty() {
         for _ in 0..args.loops {
@@ -229,46 +226,43 @@ pub fn run_experiment(
             let tcp_state = Arc::clone(&state);
             let server_state = Arc::clone(&state);
             let server_state_ch = Arc::clone(&state);
-            let port = match get_configuration() {
-                Ok(conf) => match conf.general.port {
-                    port => port,
-                },
+            let config_port = match get_configuration() {
+                Ok(conf) => conf.general.port,
                 Err(e) => {
-                    log::error!("failed to get configuration due to: {}", e);
+                    log::error!("Failed to get configuration due to: {e}");
                     return;
                 }
             };
-            let port = if is_port_available(&port) {
-                port
+
+            let chosen_port = args.port.clone().unwrap_or(config_port);
+
+            let port = if is_port_available(&chosen_port) {
+                chosen_port
             } else {
                 log::warn!(
-                    "Port {} is already in use, checking if a fall back port has been specified",
-                    port
+                    "Port {chosen_port} is already in use, checking if a fallback port has been specified"
                 );
+
                 match args.port {
                     Some(ref fallback_port) => {
-                        if fallback_port != &port {
-                            log::info!(
-                                "Fallback port {} found! Using it instead and broadcasting the environment variable",
-                                fallback_port
-                            );
+                        if fallback_port != &chosen_port {
+                            log::info!("Fallback port {fallback_port} found! Using it instead");
                             fallback_port.clone()
                         } else {
-                            log::error!("The fallback port is the same as the primary and also in use, cancelling run");
+                            log::error!(
+                                "The fallback port is the same as the chosen one and also in use, cancelling run"
+                            );
                             return;
                         }
                     }
-
                     None => {
-                        log::error!("No alternative port specified, cancelling run");
+                        log::error!("No fallback port specified, cancelling run");
                         return;
                     }
                 }
             };
-            match args.config {
-                Some(ref config) => env::set_var("REX_PROVIDED_CONFIG_PATH", &config),
-                None => {}
-            };
+
+            if let Some(ref config) = args.config { env::set_var("REX_PROVIDED_CONFIG_PATH", config) };
             env::set_var("REX_PORT", &port);
 
             let tui_thread = if args.interactive {
@@ -277,26 +271,26 @@ pub fn run_experiment(
                     let rt = match tokio::runtime::Runtime::new() {
                         Ok(rt) => rt,
                         Err(e) => {
-                            log::error!("Error creating Tokio runtime for TUI: {:?}", e);
+                            log::error!("Error creating Tokio runtime for TUI: {e:?}");
                             return;
                         }
                     };
                     let remote = false;
-                    let addr = format!("127.0.0.1:{port}", port = port_tui);
+                    let addr = format!("127.0.0.1:{port_tui}");
                     match rt.block_on(run_tui(&addr, remote)) {
                         Ok(_) => log::info!("TUI closed successfully"),
-                        Err(e) => log::error!("TUI encountered an error: {}", e),
+                        Err(e) => log::error!("TUI encountered an error: {e}"),
                     }
                 }))
             } else {
                 None
             };
             let tcp_server_thread = thread::spawn(move || {
-                let addr = format!("127.0.0.1:{port}", port = port);
+                let addr = format!("127.0.0.1:{port}");
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        log::error!("Error in thread: {:?}", e);
+                        log::error!("Error in thread: {e:?}");
                         return;
                     }
                 };
@@ -313,7 +307,7 @@ pub fn run_experiment(
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        log::error!("Error in thread: {:?}", e);
+                        log::error!("Error in thread: {e:?}");
                         return;
                     }
                 };
@@ -324,11 +318,11 @@ pub fn run_experiment(
                     log_level,
                     shutdown_rx_interpreter,
                 )) {
-                    log::error!("Python process failed: {:?}", e);
+                    log::error!("Python process failed: {e:?}");
                 }
 
                 if let Err(e) = shutdown_tx_clone_interpreter.send(()) {
-                    log::error!("Failed to send shutdown signal: {:?}", e);
+                    log::error!("Failed to send shutdown signal: {e:?}");
                 }
             });
 
@@ -336,7 +330,7 @@ pub fn run_experiment(
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        log::error!("Error in thread: {:?}", e);
+                        log::error!("Error in thread: {e:?}");
                         return;
                     }
                 };
@@ -355,7 +349,7 @@ pub fn run_experiment(
                     let rt = match tokio::runtime::Runtime::new() {
                         Ok(rt) => rt,
                         Err(e) => {
-                            log::error!("Failed to create Tokio runtime in Dumper Thread: {:?}", e);
+                            log::error!("Failed to create Tokio runtime in Dumper Thread: {e:?}");
                             return None;
                         }
                     };
@@ -371,7 +365,7 @@ pub fn run_experiment(
                             Some(filename)
                         }
                         Err(e) => {
-                            log::error!("Data storage thread encountered an error: {:?}", e);
+                            log::error!("Data storage thread encountered an error: {e:?}");
                             None
                         }
                     }
@@ -380,7 +374,7 @@ pub fn run_experiment(
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        log::error!("Failed to create Tokio runtime in Dumper Thread: {:?}", e);
+                        log::error!("Failed to create Tokio runtime in Dumper Thread: {e:?}");
                         return;
                     }
                 };
@@ -403,9 +397,9 @@ pub fn run_experiment(
                     Ok(resulting) => resulting,
                     Err(e) => {
                         if let Some(err) = e.downcast_ref::<String>() {
-                            log::error!("Data Storage thread encountered an error: {}", err);
+                            log::error!("Data Storage thread encountered an error: {err}");
                         } else if let Some(err) = e.downcast_ref::<&str>() {
-                            log::error!("Data Storage thread encountered an error: {}", err);
+                            log::error!("Data Storage thread encountered an error: {err}");
                         } else {
                             log::error!("Data Storage thread encountered an unknown error.");
                         }
@@ -423,14 +417,14 @@ pub fn run_experiment(
 
             for (name, result) in &results {
                 match result {
-                    Ok(_) => log::info!("{} shutdown successfully.", name),
+                    Ok(_) => log::info!("{name} shutdown successfully."),
                     Err(e) => {
                         if let Some(err) = e.downcast_ref::<String>() {
-                            log::error!("{} encountered an error: {}", name, err);
+                            log::error!("{name} encountered an error: {err}");
                         } else if let Some(err) = e.downcast_ref::<&str>() {
-                            log::error!("{} encountered an error: {}", name, err);
+                            log::error!("{name} encountered an error: {err}");
                         } else {
-                            log::error!("{} encountered an unknown error.", name);
+                            log::error!("{name} encountered an unknown error.");
                         }
                     }
                 }
@@ -455,7 +449,7 @@ pub fn run_experiment(
                             let rt = match tokio::runtime::Runtime::new() {
                                 Ok(rt) => rt,
                                 Err(e) => {
-                                    log::error!("Error in thread: {:?}", e);
+                                    log::error!("Error in thread: {e:?}");
                                     return;
                                 }
                             };
@@ -469,56 +463,46 @@ pub fn run_experiment(
                                     if e.to_string().contains("No experiment data found") {
                                         log::info!("No experiment data to send to ClickHouse (likely due to quick shutdown)");
                                     } else {
-                                        log::error!("ClickHouse logging failed: {:?}", e);
+                                        log::error!("ClickHouse logging failed: {e:?}");
                                     }
                                 }
                             }
                         });
                         clickhouse_thread = Some(handle);
-                    } else {
-                    };
+                    } ;
                 } else {
                     log::warn!("Failed to get Clickhouse config, data will not be logged to clickhouse, however it will be logged locally");
                 }
             } else {
                 log::error!("Failed to get configuration.");
             };
-            match clickhouse_thread {
-                Some(tcp_handle) => {
-                    let handle = tcp_handle.join();
-                    match handle {
-                        Ok(_) => log::info!("Clickhouse process shutdown sucessfully"),
-                        Err(e) => log::error!("Error in thread {:?}", e),
-                    }
+            if let Some(tcp_handle) = clickhouse_thread {
+                let handle = tcp_handle.join();
+                match handle {
+                    Ok(_) => log::info!("Clickhouse process shutdown sucessfully"),
+                    Err(e) => log::error!("Error in thread {e:?}"),
                 }
-                None => {}
             };
 
-            match output_file {
-                Some(output_file) => {
-                    log::info!("The output file directory is: {}", output_path);
-                    mailer(args.email.as_ref(), &output_file);
-                }
-                None => {}
+            if let Some(output_file) = output_file {
+                log::info!("The output file directory is: {output_path}");
+                mailer(args.email.as_ref(), &output_file);
             }
 
-            match tui_thread {
-                Some(tui_result) => {
-                    let result = tui_result.join();
-                    match result {
-                        Ok(_) => log::info!("Tui hread shutdown successfully."),
-                        Err(e) => {
-                            if let Some(err) = e.downcast_ref::<String>() {
-                                log::error!("Tui thread encountered an error: {}", err);
-                            } else if let Some(err) = e.downcast_ref::<&str>() {
-                                log::error!("Tui thread encountered an error: {}", err);
-                            } else {
-                                log::error!("Tui thread encountered an unknown error.");
-                            }
+            if let Some(tui_result) = tui_thread {
+                let result = tui_result.join();
+                match result {
+                    Ok(_) => log::info!("Tui hread shutdown successfully."),
+                    Err(e) => {
+                        if let Some(err) = e.downcast_ref::<String>() {
+                            log::error!("Tui thread encountered an error: {err}");
+                        } else if let Some(err) = e.downcast_ref::<&str>() {
+                            log::error!("Tui thread encountered an error: {err}");
+                        } else {
+                            log::error!("Tui thread encountered an unknown error.");
                         }
                     }
                 }
-                None => {}
             };
         }
     } else {
@@ -582,7 +566,7 @@ async fn start_interpreter_process_async(
     let stdout_task = task::spawn(async move {
         let mut lines = stdout_reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            log::debug!(target: "Interpreter", "{}", line);
+            log::debug!(target: "Interpreter", "{line}");
         }
     });
 
@@ -593,16 +577,16 @@ async fn start_interpreter_process_async(
         while let Ok(Some(line)) = lines.next_line().await {
             if line.starts_with("Traceback (most recent call last):") {
                 in_traceback = true;
-                log::error!("{}", line);
+                log::error!("{line}");
             } else if in_traceback {
-                log::error!("{}", line);
+                log::error!("{line}");
                 if line.trim().is_empty() {
                     in_traceback = false;
                 }
             } else if line.contains("(Ctrl+C)") {
-                log::warn!("{}", line);
+                log::warn!("{line}");
             } else {
-                log::debug!("{}", line);
+                log::debug!("{line}");
             }
         }
     });
@@ -611,11 +595,11 @@ async fn start_interpreter_process_async(
             log::warn!("Received shutdown signal, terminating interpreter process...");
             if let Some(id) = interpreter_process.id() {
                 let _ = interpreter_process.kill().await;
-                log::info!("Interpreter process (PID: {}) terminated", id);
+                log::info!("Interpreter process (PID: {id}) terminated");
             }
         }
         status = interpreter_process.wait() => {
-            log::info!("Interpreter process exited with status: {:?}", status);
+            log::info!("Interpreter process exited with status: {status:?}");
         }
     }
     // Wait for both stdout and stderr tasks to complete
@@ -632,34 +616,31 @@ pub fn cli_standalone(args: StandaloneArgs, log_level: LevelFilter) {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                log::error!("Error creating Tokio runtime for TUI: {:?}", e);
+                log::error!("Error creating Tokio runtime for TUI: {e:?}");
                 return;
             }
         };
         let remote = true;
         match rt.block_on(run_tui(&args.address, remote)) {
             Ok(_) => log::info!("TUI closed successfully"),
-            Err(e) => log::error!("TUI encountered an error: {}", e),
+            Err(e) => log::error!("TUI encountered an error: {e}"),
         }
     }));
 
-    match tui_thread {
-        Some(tui_result) => {
-            let result = tui_result.join();
-            match result {
-                Ok(_) => log::info!("Tui hread shutdown successfully."),
-                Err(e) => {
-                    if let Some(err) = e.downcast_ref::<String>() {
-                        log::error!("Tui thread encountered an error: {}", err);
-                    } else if let Some(err) = e.downcast_ref::<&str>() {
-                        log::error!("Tui thread encountered an error: {}", err);
-                    } else {
-                        log::error!("Tui thread encountered an unknown error.");
-                    }
+    if let Some(tui_result) = tui_thread {
+        let result = tui_result.join();
+        match result {
+            Ok(_) => log::info!("Tui hread shutdown successfully."),
+            Err(e) => {
+                if let Some(err) = e.downcast_ref::<String>() {
+                    log::error!("Tui thread encountered an error: {err}");
+                } else if let Some(err) = e.downcast_ref::<&str>() {
+                    log::error!("Tui thread encountered an error: {err}");
+                } else {
+                    log::error!("Tui thread encountered an unknown error.");
                 }
             }
         }
-        None => {}
     };
 }
 
@@ -669,13 +650,10 @@ pub fn process_args(original_args: Vec<String>) -> Vec<String> {
         .into_iter()
         .filter(|arg| !arg.contains("python"))
         .collect();
-    log::warn!("cleaned args: {:?}", cleaned_args);
+    log::warn!("cleaned args: {cleaned_args:?}");
     cleaned_args
 }
 
 fn is_port_available(port: &str) -> bool {
-    match TcpListener::bind(format!("127.0.0.1:{}", port)) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    TcpListener::bind(format!("127.0.0.1:{port}")).is_ok()
 }
