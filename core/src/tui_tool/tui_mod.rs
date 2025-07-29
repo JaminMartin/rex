@@ -123,7 +123,7 @@ impl App {
                     self.clear_chart_state();
                 }
                 self.has_warned_disconnected = false;
-                log::info!("Connected to server at {}", addr);
+                log::info!("Connected to server at {addr}");
                 Ok(())
             }
             Err(e) => {
@@ -131,7 +131,7 @@ impl App {
                 self.connection_status = false;
 
                 if !self.has_warned_disconnected {
-                    log::warn!("Failed to connect to {}: {}", addr, e);
+                    log::warn!("Failed to connect to {addr}: {e}");
                     self.has_warned_disconnected = true;
                 }
 
@@ -175,14 +175,14 @@ impl App {
             match stream.write_all(command.as_bytes()) {
                 Ok(_) => {
                     if let Err(e) = stream.flush() {
-                        log::error!("Failed to flush stream: {}", e);
+                        log::error!("Failed to flush stream: {e}");
                         self.tcp_stream = None;
                         self.connection_status = false;
                         return Err(e.into());
                     }
                 }
                 Err(e) => {
-                    log::error!("Failed to write command: {}", e);
+                    log::error!("Failed to write command: {e}");
                     self.tcp_stream = None;
                     self.connection_status = false;
                     return Err(e.into());
@@ -202,7 +202,7 @@ impl App {
                 }
                 Ok(_) => Ok(response.trim().to_string()),
                 Err(e) => {
-                    log::error!("Failed to read response: {}", e);
+                    log::error!("Failed to read response: {e}");
                     self.tcp_stream = None;
                     self.connection_status = false;
                     Err(e.into())
@@ -244,7 +244,7 @@ impl App {
                                 })
                                 .collect();
                         }
-                        Err(e) => log::error!("JSON Deserialization Error: {}", e),
+                        Err(e) => log::error!("JSON Deserialization Error: {e}"),
                     }
                 }
                 Ok(())
@@ -252,8 +252,7 @@ impl App {
             Err(_e) => {
                 if self.connection_status {
                     log::warn!(
-                        "Not connected to address {}. Data server is not running.",
-                        addr
+                        "Not connected to address {addr}. Data server is not running."
                     );
                     self.connection_status = false;
                 }
@@ -264,13 +263,12 @@ impl App {
     fn kill_server(&mut self, addr: &str) {
         match self.send_command(addr, "KILL\n") {
             Ok(response) => {
-                log::info!("Kill command response: {}", response);
+                log::info!("Kill command response: {response}");
             }
             Err(_e) => {
                 if self.connection_status {
                     log::warn!(
-                        "Not connected to address {}. Data server is not running.",
-                        addr
+                        "Not connected to address {addr}. Data server is not running."
                     );
                     self.connection_status = false;
                 }
@@ -280,13 +278,12 @@ impl App {
     fn pause_server(&mut self, addr: &str) {
         match self.send_command(addr, "PAUSE_STATE\n") {
             Ok(response) => {
-                log::info!("Pause command response: {}", response);
+                log::info!("Pause command response: {response}");
             }
             Err(_e) => {
                 if self.connection_status {
                     log::warn!(
-                        "Not connected to address {}. Data server is not running.",
-                        addr
+                        "Not connected to address {addr}. Data server is not running."
                     );
                     self.connection_status = false;
                 }
@@ -302,13 +299,12 @@ impl App {
     fn resume_server(&mut self, addr: &str) {
         match self.send_command(addr, "RESUME_STATE\n") {
             Ok(response) => {
-                log::info!("Resume command response: {}", response);
+                log::info!("Resume command response: {response}");
             }
             Err(_e) => {
                 if self.connection_status {
                     log::warn!(
-                        "Not connected to address {}. Data server is not running.",
-                        addr
+                        "Not connected to address {addr}. Data server is not running."
                     );
                     self.connection_status = false;
                 }
@@ -478,7 +474,7 @@ fn run_app<B: Backend>(
                             true => return Ok(()),
 
                             false => {
-                                app.kill_server(&address);
+                                app.kill_server(address);
                                 return Ok(());
                             }
                         },
@@ -487,7 +483,7 @@ fn run_app<B: Backend>(
                         KeyCode::Right => app.next_stream(),
                         KeyCode::Left => app.previous_stream(),
                         KeyCode::Char('x') => app.set_x_axis(),
-                        KeyCode::Char('k') => app.kill_server(&address),
+                        KeyCode::Char('k') => app.kill_server(address),
                         KeyCode::Char('y') => app.set_y_axis(),
                         KeyCode::Char('m') => app.show_popup = !app.show_popup,
                         KeyCode::Char('c') => {
@@ -496,10 +492,10 @@ fn run_app<B: Backend>(
                             log::info!("Cleared axis selections");
                         }
                         KeyCode::Char('p') => {
-                            app.pause_server(&address);
+                            app.pause_server(address);
                         }
                         KeyCode::Char('r') => {
-                            app.resume_server(&address);
+                            app.resume_server(address);
                         }
                         _ => {}
                     }
@@ -752,9 +748,9 @@ fn format_axis(val: f64) -> String {
     let abs_val = val.abs();
     if abs_val == 0.0 {
         "0".to_string()
-    } else if abs_val < 0.01 || abs_val >= 1000.0 {
-        format!("{:.2e}", val)
+    } else if !(0.01..1000.0).contains(&abs_val) {
+        format!("{val:.2e}")
     } else {
-        format!("{:.2}", val)
+        format!("{val:.2}")
     }
 }

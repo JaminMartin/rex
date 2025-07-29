@@ -20,12 +20,12 @@ pub async fn start_tcp_server(
     shutdown_tx: broadcast::Sender<()>,
 ) -> tokio::io::Result<()> {
     let listener = TcpListener::bind(addr.clone()).await?;
-    log::info!("TCP server listening on {}", addr);
+    log::info!("TCP server listening on {addr}");
 
     loop {
         tokio::select! {
             Ok((socket, addr)) = listener.accept() => {
-                log::debug!("New connection from: {}", addr);
+                log::debug!("New connection from: {addr}");
 
                 let shutdown_tx = shutdown_tx.clone();
                 let state = Arc::clone(&state);
@@ -58,7 +58,7 @@ async fn handle_connection(
         line.clear();
         match reader.read_line(&mut line).await {
             Ok(0) => {
-                log::debug!("Connection closed by {}", addr);
+                log::debug!("Connection closed by {addr}");
                 break;
             }
             Ok(_) => {
@@ -67,7 +67,7 @@ async fn handle_connection(
                     continue;
                 }
 
-                log::debug!("Raw data stream:{}", trimmed);
+                log::debug!("Raw data stream:{trimmed}");
                 match trimmed {
                     "GET_DATASTREAM" => {
                         let state = state.lock().await;
@@ -75,35 +75,63 @@ async fn handle_connection(
                         match serde_json::to_string(&steam_data) {
                             Ok(state_json) => {
                                 if let Err(e) = writer
-                                    .write_all(format!("{}\n", state_json).as_bytes())
+                                    .write_all(format!("{state_json}\n").as_bytes())
                                     .await
                                 {
-                                    log::error!("Failed to send server state: {}", e);
+                                    log::error!("Failed to send data stream: {e}");
                                     break;
                                 }
                                 continue;
                             }
                             Err(e) => {
-                                log::error!("Failed to serialize server state: {}", e);
+                                log::error!("Failed to serialize server state: {e}");
                                 if let Err(e) =
                                     writer.write_all(b"Error serializing server state\n").await
                                 {
-                                    log::error!("Failed to send error message: {}", e);
+                                    log::error!("Failed to send error message: {e}");
                                     break;
                                 }
                                 continue;
                             }
                         }
                     }
-
+                    "STATE" => {
+                        let state = state.lock().await;
+                        let summary = match state.to_summary() {
+                            Some(state_summary) => state_summary,
+                            None => break,
+                        };
+                        match serde_json::to_string(&summary) {
+                            Ok(state_json) => {
+                                if let Err(e) = writer
+                                    .write_all(format!("{state_json}\n").as_bytes())
+                                    .await
+                                {
+                                    log::error!("Failed to send server state: {e}");
+                                    break;
+                                }
+                                continue;
+                            }
+                            Err(e) => {
+                                log::error!("Failed to serialize server state: {e}");
+                                if let Err(e) =
+                                    writer.write_all(b"Error serializing server state\n").await
+                                {
+                                    log::error!("Failed to send error message: {e}");
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     "PAUSE_STATE" => {
                         if let Err(e) = writer
                             .write_all(
-                                format!("Setting internal server state to paused...\n").as_bytes(),
+                                "Setting internal server state to paused...\n".to_string().as_bytes(),
                             )
                             .await
                         {
-                            log::error!("Failed to send server state: {}", e);
+                            log::error!("Failed to send server state: {e}");
                             break;
                         }
                         let mut state = state.lock().await;
@@ -114,11 +142,11 @@ async fn handle_connection(
 
                     "KILL" => {
                         if let Err(e) = writer
-                            .write_all(format!("Shutting down server...\n").as_bytes())
+                            .write_all("Shutting down server...\n".to_string().as_bytes())
                             .await
                         //kill the process
                         {
-                            log::error!("Failed to send server state: {}", e);
+                            log::error!("Failed to send server state: {e}");
                             break;
                         }
                         log::info!("Recieved remote termination command, shutting down server");
@@ -128,11 +156,11 @@ async fn handle_connection(
                     "RESUME_STATE" => {
                         if let Err(e) = writer
                             .write_all(
-                                format!("Setting internal server state to start...\n").as_bytes(),
+                                "Setting internal server state to start...\n".to_string().as_bytes(),
                             )
                             .await
                         {
-                            log::error!("Failed to send server state: {}", e);
+                            log::error!("Failed to send server state: {e}");
                             break;
                         }
                         let mut state = state.lock().await;
@@ -156,7 +184,7 @@ async fn handle_connection(
                         state.update_entity(device_name, entity);
 
                         if let Err(e) = writer.write_all(b"Device measurements recorded\n").await {
-                            log::error!("Failed to send acknowledgment: {}", e);
+                            log::error!("Failed to send acknowledgment: {e}");
                             break;
                         }
                     }
@@ -172,7 +200,7 @@ async fn handle_connection(
                                 .write_all(b"Experiment configuration processed\n")
                                 .await
                             {
-                                log::error!("Failed to send acknowledgment: {}", e);
+                                log::error!("Failed to send acknowledgment: {e}");
                                 break;
                             }
                         }
@@ -181,23 +209,21 @@ async fn handle_connection(
                                 log::debug!("Listner querry");
                                 let state = state.lock().await;
 
-                                if state.internal_state == true {
+                                if state.internal_state {
                                     if let Err(e) = writer.write_all(b"Running\n").await {
-                                        log::error!("Failed to send acknowledgment: {}", e);
+                                        log::error!("Failed to send acknowledgment: {e}");
                                         break;
                                     }
-                                } else {
-                                    if let Err(e) = writer.write_all(b"Paused\n").await {
-                                        log::error!("Failed to send acknowledgment: {}", e);
-                                        break;
-                                    }
+                                } else if let Err(e) = writer.write_all(b"Paused\n").await {
+                                    log::error!("Failed to send acknowledgment: {e}");
+                                    break;
                                 }
                             }
                             Err(e) => {
-                                log::error!("Failed to parse device or experiment data: {}", e);
-                                let error_msg = format!("Invalid format: {}\n", e);
+                                log::error!("Failed to parse device or experiment data: {e}");
+                                let error_msg = format!("Invalid format: {e}\n");
                                 if let Err(e) = writer.write_all(error_msg.as_bytes()).await {
-                                    log::error!("Failed to send error message: {}", e);
+                                    log::error!("Failed to send error message: {e}");
                                     break;
                                 }
                             }
@@ -206,7 +232,7 @@ async fn handle_connection(
                 }
             }
             Err(e) => {
-                log::error!("Error reading from {}: {}", addr, e);
+                log::error!("Error reading from {addr}: {e}");
                 break;
             }
         }
@@ -230,12 +256,12 @@ pub async fn save_state(
                     {
                         let state_guard = state.lock().await;
                         if let Err(err) = state_guard.validate() {
-                            log::warn!("Validation failed: {:?}. Retrying in 5 seconds...", err);
+                            log::warn!("Validation failed: {err:?}. Retrying in 5 seconds...");
                             retries -= 1;
                             if retries == 0 {
                                 return Err(io::Error::new(
                                     io::ErrorKind::InvalidData,
-                                    format!("State is invalid after retry: {:?}", err),
+                                    format!("State is invalid after retry: {err:?}"),
                                 ));
                             }
                         } else {
@@ -245,7 +271,7 @@ pub async fn save_state(
                             };
                             let sanitized_file_name = sanitize_filename(file_name);
                             let sanitized_output_path = clean_trailing_slash(output_path);
-                            output_file_name = format_file_path(&sanitized_output_path, &sanitized_file_name, &file_name_suffix);
+                            output_file_name = format_file_path(&sanitized_output_path, &sanitized_file_name, file_name_suffix);
 
                             state_guard.dump_to_toml(&output_file_name)?;
                             break;
@@ -264,13 +290,13 @@ pub async fn save_state(
                 };
                 let sanitized_file_name = sanitize_filename(file_name);
                 let sanitized_output_path = clean_trailing_slash(output_path);
-                output_file_name = format_file_path(&sanitized_output_path, &sanitized_file_name, &file_name_suffix);
+                output_file_name = format_file_path(&sanitized_output_path, &sanitized_file_name, file_name_suffix);
                 state.dump_to_toml(&output_file_name)?;
                 break;
             }
         }
     }
-    log::info!("Saved state to: {}", output_file_name);
+    log::info!("Saved state to: {output_file_name}");
     Ok(output_file_name)
 }
 pub async fn server_status(
@@ -295,7 +321,7 @@ pub async fn server_status(
 }
 
 pub fn clean_trailing_slash(path: &str) -> String {
-    path.trim_end_matches(|c| c == '/' || c == '\\').to_string()
+    path.trim_end_matches(['/', '\\']).to_string()
 }
 
 fn format_file_path(output_path: &str, file_name: &str, file_suffix: &str) -> String {
@@ -325,7 +351,7 @@ pub async fn send_to_clickhouse(
         let mut insert_exp = client.insert(&config.experiment_meta_table)?;
 
         insert_exp.write(&exp_data).await?;
-        let _ = insert_exp.end().await?;
+        insert_exp.end().await?;
         let mut insert_measure = client.insert(&config.measurement_table)?;
         let device_data = state
             .device_data_ch(state.uuid)
@@ -335,7 +361,7 @@ pub async fn send_to_clickhouse(
                 insert_measure.write(m).await?;
             }
         }
-        let _ = insert_measure.end().await?;
+        insert_measure.end().await?;
 
         let mut insert_conf = client.insert(&config.device_meta_table)?;
         let device_conf = state
@@ -345,7 +371,7 @@ pub async fn send_to_clickhouse(
         for conf in device_conf.devices {
             insert_conf.write(&conf).await?;
         }
-        let _ = insert_conf.end().await?;
+        insert_conf.end().await?;
         log::info!("Completed Clickhouse logging!");
         Ok(())
     }
