@@ -46,8 +46,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-build-
 
-      - name: Build
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --release --verbose
+
+      - name: Build (Non-Windows)
+        if: runner.os != 'Windows'
         run: cargo build --verbose
+
+      - name: Run Tests (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --release --verbose
+
+      - name: Run Tests (Non-Windows)
+        if: runner.os != 'Windows'
+        run: cargo test --verbose
 
       - name: Run Tests
         run: cargo test --verbose
