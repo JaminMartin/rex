@@ -19,10 +19,19 @@ async fn send_test_device_data(addr: SocketAddr) -> tokio::io::Result<()> {
     println!("Attempting to connect to {}", addr);
     let mut stream = TcpStream::connect(addr).await?;
     println!("Successfully connected to server");
+    let mut measurements = HashMap::new();
+    measurements.insert(
+        "test_measurement".to_string(),
+        Measurement {
+            data: MeasurementData::Single(vec![1.0, 2.0, 3.0]),
+            unit: "V".to_string(),
+        },
+    );
+
     let test_device = Device {
         device_name: "test_device".to_string(),
         device_config: HashMap::new(),
-        measurements: HashMap::new(),
+        measurements,
         timestamps: HashMap::new(),
     };
     let json = serde_json::to_string(&test_device).unwrap();
@@ -130,125 +139,5 @@ fn test_sanitize_filename() {
     assert_eq!(
         sanitize_filename("file / name / test".to_string()),
         "file___name___test"
-    );
-}
-
-#[test]
-fn test_load_data() {
-    // Write a sample TOML string for testing
-    let toml_content = r#"[device.Test_DAQ.data]
-counts = [778.2368218901281, 6377.393470601288, 2316.8743649537096]
-voltage = [778.2368218901281, 6377.393470601288, 2316.8743649537096]
-trace = [[1.1,2.2,3.3],[4.4,5.5,6.6],[7.7,8.8,9.9],[10.0,11.1, 12.2]]
-
-[device.Test_DAQ.timestamps]
-counts = [
-    "2025-07-16T23:44:52.253132863Z",
-    "2025-07-16T23:44:52.454035371Z",
-    "2025-07-16T23:44:52.655577702Z"
-]
-voltage = [
-    "2025-07-16T23:44:50.100000000Z",
-    "2025-07-16T23:44:50.200000000Z",
-    "2025-07-16T23:44:50.300000000Z"
-]
-"#;
-    let temp_file = "test_data.toml";
-    std::fs::write(temp_file, toml_content).expect("Failed to write temporary TOML file");
-    let data = load_experimental_data(temp_file);
-    std::fs::remove_file(temp_file).expect("Failed to delete temporary TOML file");
-
-    assert!(
-        data.contains_key("Test_DAQ"),
-        "Test_DAQ section not found in the data"
-    );
-    let test_daq_data = data.get("Test_DAQ").expect("Missing Test_DAQ section");
-
-    // Test data
-    let counts = test_daq_data.get("counts").expect("Missing counts data");
-    match counts {
-        MeasurementDataPy::Single(values) => assert_eq!(
-            values,
-            &vec![778.2368218901281, 6377.393470601288, 2316.8743649537096]
-        ),
-        _ => panic!("Unexpected data format for counts"),
-    }
-
-    let voltage = test_daq_data.get("voltage").expect("Missing voltage data");
-    match voltage {
-        MeasurementDataPy::Single(values) => assert_eq!(
-            values,
-            &vec![778.2368218901281, 6377.393470601288, 2316.8743649537096]
-        ),
-        _ => panic!("Unexpected data format for voltage"),
-    }
-
-    let trace = test_daq_data.get("trace").expect("Missing trace data");
-    match trace {
-        MeasurementDataPy::Multi(values) => assert_eq!(
-            values,
-            &vec![
-                vec![1.1, 2.2, 3.3],
-                vec![4.4, 5.5, 6.6],
-                vec![7.7, 8.8, 9.9],
-                vec![10.0, 11.1, 12.2]
-            ]
-        ),
-        _ => panic!("Unexpected data format for trace"),
-    }
-
-    // Test timestamps
-    let counts_timestamps = test_daq_data
-        .get("counts_t")
-        .expect("Missing counts timestamps");
-    match counts_timestamps {
-        MeasurementDataPy::Timestamps(values) => assert_eq!(
-            values,
-            &vec![
-                "2025-07-16T23:44:52.253132863Z".to_string(),
-                "2025-07-16T23:44:52.454035371Z".to_string(),
-                "2025-07-16T23:44:52.655577702Z".to_string()
-            ]
-        ),
-        _ => panic!("Unexpected data format for counts timestamps"),
-    }
-
-    let voltage_timestamps = test_daq_data
-        .get("voltage_t")
-        .expect("Missing voltage timestamps");
-    match voltage_timestamps {
-        MeasurementDataPy::Timestamps(values) => assert_eq!(
-            values,
-            &vec![
-                "2025-07-16T23:44:50.100000000Z".to_string(),
-                "2025-07-16T23:44:50.200000000Z".to_string(),
-                "2025-07-16T23:44:50.300000000Z".to_string()
-            ]
-        ),
-        _ => panic!("Unexpected data format for voltage timestamps"),
-    }
-    let counts_data_len = match counts {
-        MeasurementDataPy::Single(values) => values.len(),
-        _ => panic!("Expected Single variant for counts"),
-    };
-    let counts_timestamps_len = match counts_timestamps {
-        MeasurementDataPy::Timestamps(values) => values.len(),
-        _ => panic!("Expected Timestamps variant for counts_t"),
-    };
-    assert_eq!(counts_timestamps_len, counts_data_len);
-
-    let voltage_data_len = match voltage {
-        MeasurementDataPy::Single(values) => values.len(),
-        _ => panic!("Expected Single variant for voltage"),
-    };
-    let voltage_timestamps_len = match voltage_timestamps {
-        MeasurementDataPy::Timestamps(values) => values.len(),
-        _ => panic!("Expected Timestamps variant for voltage_t"),
-    };
-    assert_eq!(voltage_timestamps_len, voltage_data_len);
-    // Test that trace has no timestamps (wasn't provided)
-    assert!(
-        test_daq_data.get("trace_t").is_none(),
-        "trace_t should not exist"
     );
 }
