@@ -151,34 +151,34 @@ pub struct ServeArgs {
     pub verbosity: u8,
 }
 // Wrapper for generating python bindings for rex for direct inclusion with other downstream packages.
-// THIS IS STILL COMPLETELY UNTESTED!
-#[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
-pub fn cli_parser_py() {
-    let original_args: Vec<String> = std::env::args().collect();
-    let cleaned_args = process_args(original_args);
+// THIS IS STILL COMPLETELY UNTESTED! and is now deprecated. This may make a return as a way to package rex for distribution
+// #[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
+// pub fn cli_parser_py() {
+//     let original_args: Vec<String> = std::env::args().collect();
+//     let cleaned_args = process_args(original_args);
 
-    // Default to "run" if no subcommand specified
-    let mut args_with_subcommand = vec!["rex".to_string(), "run".to_string()];
-    args_with_subcommand.extend(cleaned_args.into_iter().skip(1));
+//     // Default to "run" if no subcommand specified
+//     let mut args_with_subcommand = vec!["rex".to_string(), "run".to_string()];
+//     args_with_subcommand.extend(cleaned_args.into_iter().skip(1));
 
-    let cli = Cli::parse_from(args_with_subcommand);
-    let uuid = Uuid::new_v4();
-    match cli.command {
-        Commands::Run(args) => {
-            let (shutdown_tx, _) = broadcast::channel(1);
-            let log_level = get_log_level(cli.verbosity);
-            init_logger(log_level, args.interactive);
-            run_experiment(args, shutdown_tx, log_level, uuid);
-        }
-        Commands::View(args) => {
-            let log_level = get_log_level(cli.verbosity);
-            cli_standalone(args, log_level)
-        }
-        Commands::Serve(_args) => {
-            log::info!("Running as a server is not yet supported for python instances")
-        }
-    }
-}
+//     let cli = Cli::parse_from(args_with_subcommand);
+//     let uuid = Uuid::new_v4();
+//     match cli.command {
+//         Commands::Run(args) => {
+//             let (shutdown_tx, _) = broadcast::channel(1);
+//             let log_level = get_log_level(cli.verbosity);
+//             init_logger(log_level, args.interactive);
+//             run_experiment(args, shutdown_tx, log_level, uuid);
+//         }
+//         Commands::View(args) => {
+//             let log_level = get_log_level(cli.verbosity);
+//             cli_standalone(args, log_level)
+//         }
+//         Commands::Serve(_args) => {
+//             log::info!("Running as a server is not yet supported for python instances")
+//         }
+//     }
+// }
 // Core CLI tool used for both rex adn rex-py
 pub fn run_experiment(
     args: RunArgs,
@@ -262,7 +262,9 @@ pub fn run_experiment(
                 }
             };
 
-            if let Some(ref config) = args.config { env::set_var("REX_PROVIDED_CONFIG_PATH", config) };
+            if let Some(ref config) = args.config {
+                env::set_var("REX_PROVIDED_CONFIG_PATH", config)
+            };
             env::set_var("REX_PORT", &port);
 
             let tui_thread = if args.interactive {
@@ -469,7 +471,7 @@ pub fn run_experiment(
                             }
                         });
                         clickhouse_thread = Some(handle);
-                    } ;
+                    };
                 } else {
                     log::warn!("Failed to get Clickhouse config, data will not be logged to clickhouse, however it will be logged locally");
                 }

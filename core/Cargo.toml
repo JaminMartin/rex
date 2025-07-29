@@ -8,13 +8,6 @@ name = "rex_core"
 crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
-[dependencies.pyo3]
-version = "0.22.0"
-optional = true
-
-[features]
-extension-module = ["pyo3/extension-module"]
-default = []
 
 [dependencies]
 clap = { workspace = true }
