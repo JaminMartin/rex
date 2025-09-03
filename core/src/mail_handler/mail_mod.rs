@@ -26,14 +26,14 @@ pub fn mailer(email_adr: Option<&String>, file_path: &String) {
             .from(email_configuration.from_address.parse().unwrap())
             .reply_to(email_configuration.from_address.parse().unwrap())
             .to(email.parse().unwrap())
-            .subject("Experiment Notification")
+            .subject("Rex Notification")
             .header(ContentType::TEXT_PLAIN)
             .multipart(
                 MultiPart::mixed()
                     .singlepart(
                         SinglePart::builder()
                             .header(ContentType::TEXT_HTML)
-                            .body(String::from("Experimental Results Attached!")),
+                            .body(String::from("Results Attached!")),
                     )
                     .singlepart(attachment),
             );
@@ -46,7 +46,6 @@ pub fn mailer(email_adr: Option<&String>, file_path: &String) {
             }
         };
 
-    
         let mailer = match email_configuration.security {
             false => SmtpTransport::builder_dangerous(email_configuration.server).build(),
             true => {

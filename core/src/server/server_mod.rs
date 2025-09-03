@@ -1,4 +1,4 @@
-use crate::cli_tool::run_experiment;
+use crate::cli_tool::run_session;
 use crate::cli_tool::{RunArgs, ServeArgs};
 use crate::data_handler::get_configuration;
 
@@ -30,7 +30,7 @@ async fn fetch_tcp(state: &AppState, command: &str) -> Result<String, String> {
         let tcp_addr = state.tcp_addr.lock().await;
         tcp_addr.clone()
     };
-    log::info!("address is:{addr}");
+
     let stream = TcpStream::connect(&addr)
         .await
         .map_err(|e| format!("Failed to connect to {addr}: {e}"))?;
@@ -125,7 +125,7 @@ async fn run_handler(
             ));
         }
     };
-    let addr = format!("127.0.0.1:{}", args.port.clone().unwrap_or(config_port));
+    let addr = format!("0.0.0.0:{}", args.port.clone().unwrap_or(config_port));
     {
         let mut tcp_addr = state.tcp_addr.lock().await;
         *tcp_addr = addr;
@@ -139,7 +139,7 @@ async fn run_handler(
 
             tokio::task::spawn(async move {
                 tokio::task::spawn_blocking(move || {
-                    run_experiment(args, shutdown_tx, log_level, uuid);
+                    run_session(args, shutdown_tx, log_level, uuid);
                 })
                 .await
                 .unwrap_or_else(|e| {
@@ -151,12 +151,12 @@ async fn run_handler(
             });
             Ok(Json(RunResponse {
                 id: uuid.to_string(),
-                message: "Experiment started".to_string(),
+                message: "session started".to_string(),
             }))
         }
         true => Ok(Json(RunResponse {
             id: "None".to_string(),
-            message: "Experiment is already running, ignoring request".to_string(),
+            message: "Session is already running, ignoring request".to_string(),
         })),
     }
 }
@@ -171,7 +171,7 @@ pub async fn run_server(
         shutdown_tx: shutdown_tx.clone(),
         log_level,
         running: Arc::new(AtomicBool::new(false)),
-        tcp_addr: Arc::new(tokio::sync::Mutex::new("127.0.0.1:7676".to_string())),
+        tcp_addr: Arc::new(tokio::sync::Mutex::new("0.0.0.0:7676".to_string())),
     };
 
     let app = Router::new()
@@ -184,7 +184,7 @@ pub async fn run_server(
         .route("/continue", post(resume))
         .with_state(state);
 
-    log::info!("Rex Server listening on http://127.0.0.1:{}", args.address);
+    log::info!("Rex Server listening on http://0.0.0.0:{}", args.address);
     let address = format!("0.0.0.0:{}", args.address);
     let listener = tokio::net::TcpListener::bind(address.clone())
         .await

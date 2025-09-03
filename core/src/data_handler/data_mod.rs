@@ -14,7 +14,8 @@ use uuid::Uuid;
 
 use crate::db::{
     ClickhouseDevicePrimative, ClickhouseDevices, ClickhouseMeasurementPrimative,
-    ClickhouseMeasurements, ClickhouseServer, ExperimentClickhouse,
+    ClickhouseMeasurements, ClickhouseResults, ClickhouseResultsPrimative, ClickhouseServer,
+    SessionClickhouse,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,7 +43,8 @@ pub struct EmailServer {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Entity {
     Device(Device),
-    ExperimentSetup(Experiment),
+    Session(DataSession),
+    Results(SessionResults),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,16 +54,16 @@ pub struct Listner {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Experiment {
+pub struct DataSession {
     pub start_time: Option<String>,
     pub end_time: Option<String>,
     pub uuid: Option<Uuid>,
-    pub info: ExperimentInfo,
+    pub info: SessionInfo,
 }
 
-impl Experiment {
-    pub fn new(info: ExperimentInfo, uuid: Uuid) -> Self {
-        Experiment {
+impl DataSession {
+    pub fn new(info: SessionInfo, uuid: Uuid) -> Self {
+        DataSession {
             start_time: Some(create_time_stamp(false)),
             end_time: None,
             uuid: Some(uuid),
@@ -72,45 +74,88 @@ impl Experiment {
         self.end_time = Some(create_time_stamp(false));
     }
 
-    pub fn to_clickhouse(&self, id: Uuid) -> Option<ExperimentClickhouse> {
+    pub fn to_clickhouse(&self, id: Uuid) -> Option<SessionClickhouse> {
         let start_time = self.start_time.as_ref()?;
         let end_time = self.end_time.as_ref()?;
 
-        let exp = ExperimentClickhouse {
-            experiment_id: id,
+        let exp = SessionClickhouse {
+            session_id: id,
             start_time: start_time.clone(),
             end_time: end_time.clone(),
             name: self.info.name.clone(),
             email: self.info.email.clone(),
-            experiment_name: self.info.experiment_name.clone(),
-            experiment_description: self.info.experiment_description.clone(),
-            experiment_meta: serde_json::to_string(&self.info.meta)
+            session_name: self.info.session_name.clone(),
+            session_description: self.info.session_description.clone(),
+            session_meta: serde_json::to_string(&self.info.meta)
                 .expect("Cannot unwrap config into valid json"),
         };
         Some(exp)
     }
 }
-impl Default for Experiment {
+impl Default for DataSession {
     fn default() -> Self {
-        Experiment {
+        DataSession {
             start_time: Some(create_time_stamp(false)),
             end_time: None,
             uuid: None,
-            info: ExperimentInfo::default(),
+            info: SessionInfo::default(),
         }
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct ExperimentInfo {
-    pub name: String,
-    pub email: String,
-    pub experiment_name: String,
-    pub experiment_description: String,
-    pub meta: Option<ExperimentMeta>,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SessionResults {
+    pub result_name: String,
+    pub result_description: String,
+    pub result_status: bool,
+    pub result_criteria: Option<f64>,
+    pub result_value: Option<f64>,
+    #[serde(default)]
+    pub result_meta: HashMap<String, Value>,
+}
+impl SessionResults {
+    pub fn default() -> Self {
+        SessionResults {
+            result_name: String::default(),
+            result_description: String::default(),
+            result_status: bool::default(),
+            result_criteria: Some(f64::default()),
+            result_value: Some(f64::default()),
+            result_meta: HashMap::default(),
+        }
+    }
+
+    pub fn to_clickhouse(&self, id: Uuid) -> Option<ClickhouseResultsPrimative> {
+        let conf = ClickhouseResultsPrimative {
+            session_id: id,
+            result_type: self.result_name.clone(),
+            result_info: self.result_description.clone(),
+            result_status: self.result_status,
+            limit_value: self.result_criteria.unwrap_or_default(),
+            measured_value: self.result_value.unwrap_or_default(),
+            result_meta: serde_json::to_string(&self.result_meta)
+                .expect("failed to serialize result_meta"),
+        };
+
+        Some(conf)
+    }
 }
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct ExperimentMeta {
+pub struct SessionInfo {
+    pub name: String,
+    pub email: String,
+    #[serde(alias = "experiment_name", alias = "test_name", alias = "run_name")]
+    pub session_name: String,
+    #[serde(
+        alias = "experiment_description",
+        alias = "test_description",
+        alias = "run_description"
+    )]
+    pub session_description: String,
+    pub meta: Option<SessionMetadata>,
+}
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct SessionMetadata {
     #[serde(flatten)]
     pub meta: HashMap<String, Value>,
 }
@@ -320,7 +365,7 @@ impl Device {
                     .iter()
                     .enumerate()
                     .map(|(i, &v)| ClickhouseMeasurementPrimative {
-                        experiment_id: id,
+                        session_id: id,
                         device_name: self.device_name.clone(),
                         channel_name: channel_name.clone(),
                         channel_unit: measurement.unit.clone(),
@@ -342,7 +387,7 @@ impl Device {
                             let ts_value = parsed_timestamps.clone();
                             let unit = measurement.unit.clone();
                             move |(j, &vv)| ClickhouseMeasurementPrimative {
-                                experiment_id: id,
+                                session_id: id,
                                 device_name: self.device_name.clone(),
                                 channel_name: channel_name.clone(),
                                 channel_unit: unit.clone(),
@@ -365,7 +410,7 @@ impl Device {
 
     pub fn to_clickhouse_config(&self, id: Uuid) -> Option<ClickhouseDevicePrimative> {
         let conf = ClickhouseDevicePrimative {
-            experiment_id: id,
+            session_id: id,
             device_name: self.device_name.to_string(),
             device_config: serde_json::to_string(&self.device_config)
                 .expect("Cannot unwrap config into valid json"),
@@ -385,7 +430,7 @@ pub struct ServerState {
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Summary {
-    pub entities: Experiment,
+    pub entities: DataSession,
 }
 
 impl ServerState {
@@ -404,8 +449,9 @@ impl ServerState {
             .entities
             .iter()
             .filter_map(|(_, entity)| match entity {
-                Entity::ExperimentSetup(experiment) => Some(experiment),
+                Entity::Session(data_session) => Some(data_session),
                 Entity::Device(_) => None,
+                Entity::Results(_) => None,
             })
             .next()?;
 
@@ -425,27 +471,30 @@ impl ServerState {
                     entry.insert(Entity::Device(incoming_device));
                 }
             },
-            Entity::ExperimentSetup(experiment_setup) => match self.entities.entry(key) {
+            Entity::Results(incoming_results) => {
+                self.entities.insert(key, Entity::Results(incoming_results));
+            }
+            Entity::Session(session_setup) => match self.entities.entry(key) {
                 Entry::Vacant(entry) => {
-                    let mut experiment = Experiment::new(experiment_setup.info, self.uuid);
+                    let mut data_session = DataSession::new(session_setup.info, self.uuid);
 
                     if let Some(external_meta) = &self.external_metadata {
-                        if let Some(ref mut existing_meta) = experiment.info.meta {
+                        if let Some(ref mut existing_meta) = data_session.info.meta {
                             for (key, value) in external_meta {
                                 existing_meta.meta.insert(key.clone(), value.clone());
                             }
                         } else {
-                            let meta_struct = ExperimentMeta {
+                            let meta_struct = SessionMetadata {
                                 meta: external_meta.clone(),
                             };
-                            experiment.info.meta = Some(meta_struct);
+                            data_session.info.meta = Some(meta_struct);
                         }
                     }
 
-                    entry.insert(Entity::ExperimentSetup(experiment));
+                    entry.insert(Entity::Session(data_session));
                 }
                 Entry::Occupied(_) => {
-                    log::warn!("Can't create multiple experiments: ignoring");
+                    log::warn!("Can't create multiple sessions: ignoring");
                 }
             },
         }
@@ -460,14 +509,15 @@ impl ServerState {
                 Entity::Device(device_data) => {
                     device_data.truncate();
                 }
-                Entity::ExperimentSetup(_) => {}
+                Entity::Session(_) => {}
+                Entity::Results(_) => {}
             }
         }
     }
     pub fn finalise_time(&mut self) {
         for entity in self.entities.values_mut() {
-            if let Entity::ExperimentSetup(experiment) = entity {
-                experiment.append_end_time()
+            if let Entity::Session(data_session) = entity {
+                data_session.append_end_time()
             }
         }
     }
@@ -511,7 +561,8 @@ impl ServerState {
                         last_measurement
                     );
                 }
-                Entity::ExperimentSetup(_experiment) => {}
+                Entity::Session(_session) => {}
+                Entity::Results(_session) => {}
             }
         }
         log::info!("========================\n");
@@ -522,52 +573,53 @@ impl ServerState {
 
         for (key, entity) in &self.entities {
             match entity {
-                Entity::ExperimentSetup(exeperimentsetup) => {
-                    if !root.contains_key("experiment") {
-                        root.insert("experiment".to_string(), Value::Table(Table::new()));
+                Entity::Results(_result_info) => {}
+                Entity::Session(session_setup) => {
+                    if !root.contains_key("session") {
+                        root.insert("session".to_string(), Value::Table(Table::new()));
                     }
 
-                    let experiment_table = root
-                        .get_mut("experiment")
+                    let session_table = root
+                        .get_mut("session")
                         .and_then(|v| v.as_table_mut())
                         .unwrap();
-                    experiment_table.insert(
+                    session_table.insert(
                         "start_time".to_string(),
-                        Value::String(exeperimentsetup.start_time.clone().unwrap_or_default()),
+                        Value::String(session_setup.start_time.clone().unwrap_or_default()),
                     );
-                    experiment_table.insert(
+                    session_table.insert(
                         "end_time".to_string(),
-                        Value::String(exeperimentsetup.end_time.clone().unwrap_or_default()),
+                        Value::String(session_setup.end_time.clone().unwrap_or_default()),
                     );
 
-                    experiment_table.insert(
+                    session_table.insert(
                         "UUID".to_string(),
                         Value::String(
-                            exeperimentsetup
+                            session_setup
                                 .uuid
                                 .map_or(String::new(), |uuid| uuid.to_string()),
                         ),
                     );
-                    let mut experiment_config = Table::new();
+                    let mut session_config = Table::new();
 
-                    experiment_config.insert(
+                    session_config.insert(
                         "name".to_string(),
-                        Value::String(exeperimentsetup.info.name.clone()),
+                        Value::String(session_setup.info.name.clone()),
                     );
-                    experiment_config.insert(
+                    session_config.insert(
                         "email".to_string(),
-                        Value::String(exeperimentsetup.info.email.clone()),
+                        Value::String(session_setup.info.email.clone()),
                     );
 
-                    experiment_config.insert(
-                        "experiment_name".to_string(),
-                        Value::String(exeperimentsetup.info.experiment_name.clone()),
+                    session_config.insert(
+                        "session_name".to_string(),
+                        Value::String(session_setup.info.session_name.clone()),
                     );
-                    experiment_config.insert(
-                        "experiment_description".to_string(),
-                        Value::String(exeperimentsetup.info.experiment_description.clone()),
+                    session_config.insert(
+                        "session_description".to_string(),
+                        Value::String(session_setup.info.session_description.clone()),
                     );
-                    if let Some(ref meta) = exeperimentsetup.info.meta {
+                    if let Some(ref meta) = session_setup.info.meta {
                         let mut meta_table = Table::new();
                         for (key, value) in &meta.meta {
                             let toml_value = match value {
@@ -584,9 +636,9 @@ impl ServerState {
                             };
                             meta_table.insert(key.clone(), toml_value);
                         }
-                        experiment_config.insert("meta".to_string(), Value::Table(meta_table));
+                        session_config.insert("meta".to_string(), Value::Table(meta_table));
                     }
-                    experiment_table.insert("info".to_string(), Value::Table(experiment_config));
+                    session_table.insert("info".to_string(), Value::Table(session_config));
                 }
 
                 Entity::Device(device) => {
@@ -653,27 +705,28 @@ impl ServerState {
                 }
             }
         }
-        let toml_string = toml::to_string_pretty(&root)
-            .map_err(|e| io::Error::other(e.to_string()))?;
+        let toml_string =
+            toml::to_string_pretty(&root).map_err(|e| io::Error::other(e.to_string()))?;
         fs::write(file_path, toml_string.clone())?;
         let tmp_dir = env::temp_dir();
         let temp_path = tmp_dir.join("rex.toml");
         fs::write(&temp_path, toml_string)?;
         Ok(())
     }
-    pub fn get_experiment_name(&self) -> Option<String> {
+    pub fn get_session_name(&self) -> Option<String> {
         self.entities.values().find_map(|entity| {
-            if let Entity::ExperimentSetup(experiment) = entity {
-                Some(experiment.info.experiment_name.clone())
+            if let Entity::Session(data_session) = entity {
+                Some(data_session.info.session_name.clone())
             } else {
                 None
             }
         })
     }
-    pub fn experiment_data_ch(&self, id: Uuid) -> Option<ExperimentClickhouse> {
+
+    pub fn session_data_ch(&self, id: Uuid) -> Option<SessionClickhouse> {
         self.entities.values().find_map(|entity| {
-            if let Entity::ExperimentSetup(experiment) = entity {
-                experiment.to_clickhouse(id)
+            if let Entity::Session(data_session) = entity {
+                data_session.to_clickhouse(id)
             } else {
                 None
             }
@@ -717,17 +770,37 @@ impl ServerState {
             Some(device_data)
         }
     }
+    pub fn results_ch(&self, id: Uuid) -> Option<ClickhouseResults> {
+        let result_data: ClickhouseResults = ClickhouseResults {
+            results: self
+                .entities
+                .values()
+                .filter_map(|entity| {
+                    if let Entity::Results(result) = entity {
+                        result.to_clickhouse(id)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        };
+        if result_data.results.is_empty() {
+            None
+        } else {
+            Some(result_data)
+        }
+    }
     pub fn validate(&self) -> io::Result<()> {
         log::trace!("Validating state, entities: {:?}", self.entities);
 
-        let has_experiment_setup = self
+        let has_session_setup = self
             .entities
             .values()
-            .any(|entity| matches!(entity, Entity::ExperimentSetup(_)));
-        if !has_experiment_setup {
+            .any(|entity| matches!(entity, Entity::Session(_)));
+        if !has_session_setup {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "No entity of type ExperimentSetup found",
+                "No entity of type Session found",
             ));
         }
         Ok(())
@@ -743,7 +816,8 @@ impl ServerState {
                         device.latest_data_truncated(100),
                     );
                 }
-                Entity::ExperimentSetup(_experiment) => {}
+                Entity::Session(_session) => {}
+                Entity::Results(_session) => {}
             }
         }
         stream_contents
@@ -827,18 +901,14 @@ pub fn get_configuration() -> Result<Configuration, String> {
     let contents = match config_contents {
         Ok(contents) => toml::from_str(&contents),
         Err(e) => {
-            log::error!(
-                "Could not read config.toml file, raised the following error: {e}"
-            );
+            log::error!("Could not read config.toml file, raised the following error: {e}");
             return Err(e.to_string());
         }
     };
     let rex_configuration: Configuration = match contents {
         Ok(config) => config,
         Err(e) => {
-            log::error!(
-                "Could not read config.toml file, raised the following error: {e}"
-            );
+            log::error!("Could not read config.toml file, raised the following error: {e}");
 
             return Err(e.to_string());
         }
@@ -858,7 +928,6 @@ pub fn configurable_dir_path(
         .or_else(dir)
 }
 fn parse_external_metadata(meta_data: String) -> Option<HashMap<String, Value>> {
-    
     match serde_json::from_str(&meta_data) {
         Ok(meta) => meta,
         Err(_) => None,
