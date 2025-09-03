@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["core", "cli"]
-package.version = "0.9.5"
+package.version = "1.0.0"
 
 
 [workspace.dependencies]

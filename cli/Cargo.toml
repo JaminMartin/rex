@@ -3,7 +3,7 @@ name = "rex-cli"
 edition = "2021"
 description = "Experimental control and data viewer for scientific workflows"
 publish = false
-version = "0.9.5"
+version = "1.0.0"
 [dependencies]
 rex-core = { path = "../core", default-features = false }
 tokio = { workspace = true }
