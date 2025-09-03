@@ -8,8 +8,10 @@ services:
       CLICKHOUSE_USER: default
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
       CLICKHOUSE_PASSWORD: secret # change this!
+
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./network.xml:/etc/clickhouse-server/config.d/network.xml
       - clickhouse_data:/var/lib/clickhouse
       - clickhouse_logs:/var/log/clickhouse-server
     ports:
