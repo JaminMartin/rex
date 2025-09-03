@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rex"
+version = "1.0.0"
+description = "Rex CLI"
+requires-python = ">=3.13"
+
+[tool.maturin]
+# Specify which crate to build (assuming you want to build the 'cli' crate)
+module-name = "rex"
+# Point to the directory containing the Cargo.toml with [lib] or [[bin]] sections
+manifest-path = "cli/Cargo.toml"
+
+[tool.maturin.scripts]
+rex = "rex"
