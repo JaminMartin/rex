@@ -1,6 +1,6 @@
 use clap::Parser;
 use rex_core::cli_tool::{
-    cli_standalone, get_log_level, init_logger, process_args, run_experiment, Cli, Commands,
+    cli_standalone, get_log_level, init_logger, process_args, run_session, Cli, Commands,
 };
 use rex_core::server::run_server;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,7 +35,7 @@ async fn main() {
             });
 
             let cli_thread = thread::spawn(move || {
-                run_experiment(args, shutdown_tx, log_level, uuid);
+                run_session(args, shutdown_tx, log_level, uuid);
             });
 
             if cli_thread.join().is_err() {}
