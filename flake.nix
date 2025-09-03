@@ -38,11 +38,17 @@
             pkgs.pkg-config
             pkgs.systemd
             pkgs.openssl
-            pkgs.zlib
-            pkgs.stdenv.cc.cc.lib
+            pkgs.python313
+            pkgs.uv
+            pkgs.maturin
+            pkgs.zlib # numpy
+            pkgs.stdenv.cc.cc.lib # numpy
+            pkgs.chromium # for when python needs plotly saving support
           ];
           shellHook = ''
-            export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${pkgs.zlib}/lib:${pkgs.stdenv.cc.cc.lib}/lib
+            export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${pkgs.zlib}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.openssl}/lib
+            export PATH=${pkgs.chromium}/bin:$PATH
+            export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig:$PKG_CONFIG_PATH"
           '';
 
         };
