@@ -1,15 +1,16 @@
 use crate::data_handler::{
-    create_log_timestamp, sanitize_filename, Device, Entity, Experiment, Listner, ServerState,
+    create_log_timestamp, sanitize_filename, DataSession, Device, Entity, Listner, ServerState,
+    SessionResults,
 };
 use crate::db::ClickhouseServer;
 use clickhouse::Client;
-
 use std::io;
 use std::net::SocketAddr;
 use std::path::MAIN_SEPARATOR;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
@@ -68,168 +69,20 @@ async fn handle_connection(
                 }
 
                 log::debug!("Raw data stream:{trimmed}");
-                match trimmed {
-                    "GET_DATASTREAM" => {
-                        let state = state.lock().await;
-                        let steam_data = state.send_stream();
-                        match serde_json::to_string(&steam_data) {
-                            Ok(state_json) => {
-                                if let Err(e) = writer
-                                    .write_all(format!("{state_json}\n").as_bytes())
-                                    .await
-                                {
-                                    log::error!("Failed to send data stream: {e}");
-                                    break;
-                                }
-                                continue;
-                            }
-                            Err(e) => {
-                                log::error!("Failed to serialize server state: {e}");
-                                if let Err(e) =
-                                    writer.write_all(b"Error serializing server state\n").await
-                                {
-                                    log::error!("Failed to send error message: {e}");
-                                    break;
-                                }
-                                continue;
-                            }
-                        }
-                    }
-                    "STATE" => {
-                        let state = state.lock().await;
-                        let summary = match state.to_summary() {
-                            Some(state_summary) => state_summary,
-                            None => break,
-                        };
-                        match serde_json::to_string(&summary) {
-                            Ok(state_json) => {
-                                if let Err(e) = writer
-                                    .write_all(format!("{state_json}\n").as_bytes())
-                                    .await
-                                {
-                                    log::error!("Failed to send server state: {e}");
-                                    break;
-                                }
-                                continue;
-                            }
-                            Err(e) => {
-                                log::error!("Failed to serialize server state: {e}");
-                                if let Err(e) =
-                                    writer.write_all(b"Error serializing server state\n").await
-                                {
-                                    log::error!("Failed to send error message: {e}");
-                                    break;
-                                }
-                                continue;
-                            }
-                        }
-                    }
-                    "PAUSE_STATE" => {
-                        if let Err(e) = writer
-                            .write_all(
-                                "Setting internal server state to paused...\n".to_string().as_bytes(),
-                            )
-                            .await
-                        {
-                            log::error!("Failed to send server state: {e}");
-                            break;
-                        }
-                        let mut state = state.lock().await;
-                        state.internal_state = false;
-                        log::info!("setting server state to paused....");
-                        continue;
-                    }
 
-                    "KILL" => {
-                        if let Err(e) = writer
-                            .write_all("Shutting down server...\n".to_string().as_bytes())
-                            .await
-                        //kill the process
-                        {
-                            log::error!("Failed to send server state: {e}");
-                            break;
-                        }
-                        log::info!("Recieved remote termination command, shutting down server");
-                        let _ = shutdown_tx.send(());
+                if handle_command(trimmed, &mut writer, &state, &shutdown_tx).await {
+                    if trimmed == "KILL" {
                         break;
                     }
-                    "RESUME_STATE" => {
-                        if let Err(e) = writer
-                            .write_all(
-                                "Setting internal server state to start...\n".to_string().as_bytes(),
-                            )
-                            .await
-                        {
-                            log::error!("Failed to send server state: {e}");
-                            break;
-                        }
-                        let mut state = state.lock().await;
-                        state.internal_state = true;
-                        continue;
-                    }
-                    _ => {}
+                    continue;
                 }
 
-                match serde_json::from_str::<Device>(trimmed) {
-                    Ok(mut device) => {
-                        let timestamp = vec![create_log_timestamp()];
-                        for measure_type in device.measurements.keys() {
-                            device
-                                .timestamps
-                                .insert(measure_type.clone(), timestamp.clone());
-                        }
-                        let device_name = device.device_name.clone();
-                        let mut state = state.lock().await;
-                        let entity = Entity::Device(device);
-                        state.update_entity(device_name, entity);
-
-                        if let Err(e) = writer.write_all(b"Device measurements recorded\n").await {
-                            log::error!("Failed to send acknowledgment: {e}");
-                            break;
-                        }
-                    }
-                    Err(_) => match serde_json::from_str::<Experiment>(trimmed) {
-                        Ok(experiment) => {
-                            log::info!("Experiment data processed");
-                            let experiment_name = experiment.info.name.clone();
-                            let mut state = state.lock().await;
-                            let entity = Entity::ExperimentSetup(experiment);
-                            state.update_entity(experiment_name, entity);
-
-                            if let Err(e) = writer
-                                .write_all(b"Experiment configuration processed\n")
-                                .await
-                            {
-                                log::error!("Failed to send acknowledgment: {e}");
-                                break;
-                            }
-                        }
-                        Err(_) => match serde_json::from_str::<Listner>(trimmed) {
-                            Ok(_) => {
-                                log::debug!("Listner querry");
-                                let state = state.lock().await;
-
-                                if state.internal_state {
-                                    if let Err(e) = writer.write_all(b"Running\n").await {
-                                        log::error!("Failed to send acknowledgment: {e}");
-                                        break;
-                                    }
-                                } else if let Err(e) = writer.write_all(b"Paused\n").await {
-                                    log::error!("Failed to send acknowledgment: {e}");
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                log::error!("Failed to parse device or experiment data: {e}");
-                                let error_msg = format!("Invalid format: {e}\n");
-                                if let Err(e) = writer.write_all(error_msg.as_bytes()).await {
-                                    log::error!("Failed to send error message: {e}");
-                                    break;
-                                }
-                            }
-                        },
-                    },
+                if handle_entity(trimmed, &mut writer, &state).await {
+                    continue;
                 }
+
+                log::error!("Unknown message format: {}", trimmed);
+                let _ = writer.write_all(b"Invalid format\n").await;
             }
             Err(e) => {
                 log::error!("Error reading from {addr}: {e}");
@@ -238,6 +91,109 @@ async fn handle_connection(
         }
     }
 }
+
+async fn handle_command(
+    message: &str,
+    writer: &mut OwnedWriteHalf,
+    state: &Arc<Mutex<ServerState>>,
+    shutdown_tx: &broadcast::Sender<()>,
+) -> bool {
+    match message {
+        "GET_DATASTREAM" => {
+            let state = state.lock().await;
+            let steam_data = state.send_stream();
+            if let Ok(state_json) = serde_json::to_string(&steam_data) {
+                let _ = writer.write_all(format!("{state_json}\n").as_bytes()).await;
+            }
+            true
+        }
+        "STATE" => {
+            let state = state.lock().await;
+            if let Some(summary) = state.to_summary() {
+                if let Ok(state_json) = serde_json::to_string(&summary) {
+                    let _ = writer.write_all(format!("{state_json}\n").as_bytes()).await;
+                }
+            }
+            true
+        }
+        "PAUSE_STATE" => {
+            let _ = writer
+                .write_all(b"Setting internal server state to paused...\n")
+                .await;
+            let mut state = state.lock().await;
+            state.internal_state = false;
+            log::info!("setting server state to paused....");
+            true
+        }
+        "KILL" => {
+            let _ = writer.write_all(b"Shutting down server...\n").await;
+            log::info!("Received remote termination command, shutting down server");
+            let _ = shutdown_tx.send(());
+            true
+        }
+        "RESUME_STATE" => {
+            let _ = writer
+                .write_all(b"Setting internal server state to start...\n")
+                .await;
+            let mut state = state.lock().await;
+            state.internal_state = true;
+            true
+        }
+        _ => false, // Not a command
+    }
+}
+
+async fn handle_entity(
+    message: &str,
+    writer: &mut OwnedWriteHalf,
+    state: &Arc<Mutex<ServerState>>,
+) -> bool {
+    if let Ok(mut device) = serde_json::from_str::<Device>(message) {
+        let timestamp = vec![create_log_timestamp()];
+        for measure_type in device.measurements.keys() {
+            device
+                .timestamps
+                .insert(measure_type.clone(), timestamp.clone());
+        }
+        let device_name = device.device_name.clone();
+        let mut state = state.lock().await;
+        state.update_entity(device_name, Entity::Device(device));
+        let _ = writer.write_all(b"Device measurements recorded\n").await;
+        return true;
+    }
+
+    if let Ok(data_session) = serde_json::from_str::<DataSession>(message) {
+        log::info!("Session data processed");
+        let session_name = data_session.info.name.clone();
+        let mut state = state.lock().await;
+        state.update_entity(session_name, Entity::Session(data_session));
+        let _ = writer.write_all(b"Session configuration processed\n").await;
+        return true;
+    }
+
+    if let Ok(_) = serde_json::from_str::<Listner>(message) {
+        log::debug!("Listener query");
+        let state = state.lock().await;
+        if state.internal_state {
+            let _ = writer.write_all(b"Running\n").await;
+        } else {
+            let _ = writer.write_all(b"Paused\n").await;
+        }
+        return true;
+    }
+
+    if let Ok(result_session) = serde_json::from_str::<SessionResults>(message) {
+        log::info!("Session results processed");
+        let result_name = result_session.result_name.clone();
+        let mut state = state.lock().await;
+        state.update_entity(result_name, Entity::Results(result_session));
+        let _ = writer.write_all(b"Session results processed\n").await;
+        return true;
+    }
+
+    false
+}
+
 pub async fn save_state(
     state: Arc<Mutex<ServerState>>,
     mut shutdown_rx: broadcast::Receiver<()>,
@@ -265,7 +221,7 @@ pub async fn save_state(
                                 ));
                             }
                         } else {
-                            let file_name = match state_guard.get_experiment_name() {
+                            let file_name = match state_guard.get_session_name() {
                                 Some(name) => name,
                                 None => break,
                             };
@@ -284,7 +240,7 @@ pub async fn save_state(
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 let mut state = state.lock().await;
                 state.finalise_time();
-                let file_name = match state.get_experiment_name() {
+                let file_name = match state.get_session_name() {
                     Some(file_name) => file_name,
                     None => break,
                 };
@@ -345,13 +301,13 @@ pub async fn send_to_clickhouse(
     log::info!("Starting clickhouse Logging!");
     {
         let state = state.lock().await;
-        let exp_data = state
-            .experiment_data_ch(state.uuid)
-            .ok_or("No experiment data found")?;
-        let mut insert_exp = client.insert(&config.experiment_meta_table)?;
+        let session_data = state
+            .session_data_ch(state.uuid)
+            .ok_or("No session data found")?;
+        let mut insert_session = client.insert(&config.session_meta_table)?;
 
-        insert_exp.write(&exp_data).await?;
-        insert_exp.end().await?;
+        insert_session.write(&session_data).await?;
+
         let mut insert_measure = client.insert(&config.measurement_table)?;
         let device_data = state
             .device_data_ch(state.uuid)
@@ -361,7 +317,6 @@ pub async fn send_to_clickhouse(
                 insert_measure.write(m).await?;
             }
         }
-        insert_measure.end().await?;
 
         let mut insert_conf = client.insert(&config.device_meta_table)?;
         let device_conf = state
@@ -371,7 +326,29 @@ pub async fn send_to_clickhouse(
         for conf in device_conf.devices {
             insert_conf.write(&conf).await?;
         }
+
+        let mut insert_res_opt = None;
+        if let Some(res) = state.results_ch(state.uuid) {
+            if !res.results.is_empty() {
+                let mut insert_res = client.insert(&config.results_table)?;
+                for result in res.results {
+                    insert_res.write(&result).await?;
+                }
+                insert_res_opt = Some(insert_res);
+            } else {
+                log::info!("No results to insert (empty results)");
+            }
+        } else {
+            log::info!("No results to insert (no results data)");
+        }
+
+        insert_session.end().await?;
+        insert_measure.end().await?;
         insert_conf.end().await?;
+        if let Some(insert_res) = insert_res_opt {
+            insert_res.end().await?;
+        }
+
         log::info!("Completed Clickhouse logging!");
         Ok(())
     }
