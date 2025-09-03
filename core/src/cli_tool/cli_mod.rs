@@ -1,4 +1,6 @@
-use crate::data_handler::{create_time_stamp, get_configuration, ServerState};
+use crate::data_handler::{
+    create_time_stamp, get_configuration, DataSession, ServerState, SessionInfo,
+};
 use crate::mail_handler::mailer;
 use crate::tcp_handler::{save_state, send_to_clickhouse, server_status, start_tcp_server};
 use crate::tui_tool::run_tui;
@@ -6,6 +8,7 @@ use clap::{Parser, Subcommand};
 use env_logger::{Builder, Target};
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use std::env;
 use std::fmt::Debug;
@@ -54,7 +57,45 @@ pub fn get_log_level(verbosity: u8) -> LevelFilter {
     }
 }
 
-/// A commandline experiment management tool
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MinimalSessionInfo {
+    pub name: String,
+    pub email: String,
+    pub session_name: String,
+    pub session_description: String,
+    pub devices: Option<HashMap<String, DeviceConfig>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DeviceConfig {
+    #[serde(flatten)]
+    pub config: HashMap<String, toml::Value>,
+}
+
+#[derive(Serialize)]
+struct ConfigOverride {
+    session: DataSession,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device: Option<HashMap<String, DeviceConfig>>,
+}
+
+impl From<MinimalSessionInfo> for DataSession {
+    fn from(minimal: MinimalSessionInfo) -> Self {
+        DataSession {
+            start_time: None,
+            end_time: None,
+            uuid: None,
+            info: SessionInfo {
+                name: minimal.name,
+                email: minimal.email,
+                session_name: minimal.session_name,
+                session_description: minimal.session_description,
+                meta: None,
+            },
+        }
+    }
+}
+/// A commandline DAQ management tool
 #[derive(Parser, Debug)]
 #[command(name = "rex",version, about, long_about = None)]
 pub struct Cli {
@@ -72,22 +113,22 @@ pub enum Commands {
     Serve(ServeArgs),
 }
 
-/// A commandline experiment runner
+/// A commandline DAQ runner
 #[derive(Parser, Debug, Clone, Deserialize, Serialize)]
 #[command(version, about, long_about = None)]
 pub struct RunArgs {
     /// Email address to receive results
     #[arg(short, long)]
     email: Option<String>,
-    /// Time delay in minutes before starting the experiment
+    /// Time delay in minutes before starting the session
     #[arg(short, long, default_value_t = 0)]
     #[serde(default = "default_delay")]
     delay: u64,
-    /// Number of times to loop the experiment
+    /// Number of times to loop the session
     #[arg(short, long, default_value_t = 1)]
     #[serde(default = "default_loops")]
     loops: u8,
-    /// Path to script containing the experimental setup / control flow
+    /// Path to script containing the session setup / control flow
     #[arg(short, long)]
     path: PathBuf,
     /// Dry run, will not log data. Can be used for long term monitoring
@@ -104,7 +145,7 @@ pub struct RunArgs {
     /// Port overide, allows for overiding default port. Will export this as environment variable for devices to utilise.
     #[arg(short = 'P', long)]
     pub port: Option<String>,
-    /// Optional path to config file used by experiment script. Useful when it is critical the script goes unmodified.,
+    /// Optional path to config file used by DAQ script (python, matlab etc). Useful when it is critical the script goes unmodified.,
     #[arg(short, long)]
     config: Option<String>,
     // Additional metadata that will be stored as part of the run
@@ -125,11 +166,11 @@ const fn default_loops() -> u8 {
 const fn default_interactive() -> bool {
     false
 }
-/// A commandline experiment viewer
+/// A commandline DAQ viewer
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct StandaloneArgs {
-    // Port the current experiment is running on. If you are running this on the same device it will be 127.0.0.1:7676
+    // Port the current session is running on. If you are running this on the same device it will be 0.0.0.0:7676
     // otherwise, please use the devices IP , device_ip:7676
     #[arg(short, long)]
     address: String,
@@ -138,11 +179,11 @@ pub struct StandaloneArgs {
     verbosity: u8,
 }
 
-/// A commandline experiment server
+/// A commandline DAQ server
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct ServeArgs {
-    // Port the current experiment is running on. If you are running this on the same device it will be 127.0.0.1:7676
+    // Port the current session is running on. If you are running this on the same device it will be 0.0.0.0:7676
     // otherwise, please use the devices IP , device_ip:7676
     #[arg(short, long, default_value_t = 9000)]
     pub address: u32,
@@ -150,43 +191,15 @@ pub struct ServeArgs {
     #[arg(short, long, default_value_t = 2)]
     pub verbosity: u8,
 }
-// Wrapper for generating python bindings for rex for direct inclusion with other downstream packages.
-// THIS IS STILL COMPLETELY UNTESTED! and is now deprecated. This may make a return as a way to package rex for distribution
-// #[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
-// pub fn cli_parser_py() {
-//     let original_args: Vec<String> = std::env::args().collect();
-//     let cleaned_args = process_args(original_args);
 
-//     // Default to "run" if no subcommand specified
-//     let mut args_with_subcommand = vec!["rex".to_string(), "run".to_string()];
-//     args_with_subcommand.extend(cleaned_args.into_iter().skip(1));
-
-//     let cli = Cli::parse_from(args_with_subcommand);
-//     let uuid = Uuid::new_v4();
-//     match cli.command {
-//         Commands::Run(args) => {
-//             let (shutdown_tx, _) = broadcast::channel(1);
-//             let log_level = get_log_level(cli.verbosity);
-//             init_logger(log_level, args.interactive);
-//             run_experiment(args, shutdown_tx, log_level, uuid);
-//         }
-//         Commands::View(args) => {
-//             let log_level = get_log_level(cli.verbosity);
-//             cli_standalone(args, log_level)
-//         }
-//         Commands::Serve(_args) => {
-//             log::info!("Running as a server is not yet supported for python instances")
-//         }
-//     }
-// }
-// Core CLI tool used for both rex adn rex-py
-pub fn run_experiment(
+// Core CLI tool used for rex
+pub fn run_session(
     args: RunArgs,
     shutdown_tx: broadcast::Sender<()>,
     log_level: LevelFilter,
     uuid: Uuid,
 ) {
-    log::info!("Experiment starting in {} s", args.delay * 60);
+    log::info!("Session starting in {} s", args.delay * 60);
 
     sleep(Duration::from_secs(&args.delay * 60));
     let interpreter_path_str = match get_configuration() {
@@ -263,9 +276,11 @@ pub fn run_experiment(
             };
 
             if let Some(ref config) = args.config {
-                env::set_var("REX_PROVIDED_CONFIG_PATH", config)
+                let _ = setup_overwrite(&config);
             };
             env::set_var("REX_PORT", &port);
+            env::set_var("REX_STORE", env::temp_dir());
+            env::set_var("REX_UUID", uuid.to_string());
 
             let tui_thread = if args.interactive {
                 let port_tui = port.clone();
@@ -278,7 +293,7 @@ pub fn run_experiment(
                         }
                     };
                     let remote = false;
-                    let addr = format!("127.0.0.1:{port_tui}");
+                    let addr = format!("0.0.0.0:{port_tui}");
                     match rt.block_on(run_tui(&addr, remote)) {
                         Ok(_) => log::info!("TUI closed successfully"),
                         Err(e) => log::error!("TUI encountered an error: {e}"),
@@ -288,7 +303,7 @@ pub fn run_experiment(
                 None
             };
             let tcp_server_thread = thread::spawn(move || {
-                let addr = format!("127.0.0.1:{port}");
+                let addr = format!("0.0.0.0:{port}");
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
@@ -462,8 +477,8 @@ pub fn run_experiment(
                             {
                                 Ok(_) => log::info!("ClickHouse logging completed successfully"),
                                 Err(e) => {
-                                    if e.to_string().contains("No experiment data found") {
-                                        log::info!("No experiment data to send to ClickHouse (likely due to quick shutdown)");
+                                    if e.to_string().contains("No Session data found") {
+                                        log::info!("No Session data to send to ClickHouse (likely due to quick shutdown)");
                                     } else {
                                         log::error!("ClickHouse logging failed: {e:?}");
                                     }
@@ -610,7 +625,6 @@ async fn start_interpreter_process_async(
     Ok(())
 }
 
-#[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
 pub fn cli_standalone(args: StandaloneArgs, log_level: LevelFilter) {
     let _ = tui_logger::init_logger(log_level);
 
@@ -657,5 +671,47 @@ pub fn process_args(original_args: Vec<String>) -> Vec<String> {
 }
 
 fn is_port_available(port: &str) -> bool {
-    TcpListener::bind(format!("127.0.0.1:{port}")).is_ok()
+    TcpListener::bind(format!("0.0.0.0:{port}")).is_ok()
+}
+
+pub fn setup_overwrite(config: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if std::path::Path::new(config).exists() {
+        env::set_var("REX_PROVIDED_CONFIG_PATH", config);
+    } else {
+        match serde_json::from_str::<MinimalSessionInfo>(config) {
+            Ok(data) => {
+                let session: DataSession = data.clone().into();
+                let devices = data.devices;
+                let temp_path = create_temp_config_file(&session, devices)?;
+                env::set_var(
+                    "REX_PROVIDED_OVERWRITE_PATH",
+                    temp_path.to_string_lossy().as_ref(),
+                );
+            }
+            Err(e) => {
+                return Err(
+                    format!("Config is neither a valid file path nor valid JSON: {}", e).into(),
+                );
+            }
+        }
+    };
+    Ok(())
+}
+
+fn create_temp_config_file(
+    session: &DataSession,
+    devices: Option<HashMap<String, DeviceConfig>>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let temp_dir = env::temp_dir();
+    let temp_filename = format!("rex_config_{}.toml", Uuid::new_v4());
+    let temp_path = temp_dir.join(temp_filename);
+
+    let config_file = ConfigOverride {
+        session: session.clone(),
+        device: devices,
+    };
+
+    let toml_content = toml::to_string_pretty(&config_file)?;
+    std::fs::write(&temp_path, toml_content)?;
+    Ok(temp_path)
 }
