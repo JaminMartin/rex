@@ -77,7 +77,7 @@ fn test_tcp_server_basic_connection() {
     let state = Arc::new(Mutex::new(ServerState::default()));
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
-    let addr = "127.0.0.1:7676".to_string();
+    let addr = "0.0.0.0:7676".to_string();
     let addr_clone = addr.clone();
     let shutdown_tx_clone = shutdown_tx.clone();
     let tcp_server_thread = thread::spawn(move || {
