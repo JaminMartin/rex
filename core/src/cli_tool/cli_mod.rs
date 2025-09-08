@@ -234,6 +234,7 @@ pub fn run_session(
             let shutdown_rx_logger = shutdown_tx.subscribe();
             let shutdown_rx_interpreter = shutdown_tx.subscribe();
             let shutdown_tx_clone_interpreter = shutdown_tx.clone();
+            let shutdown_tx_logger = shutdown_tx.clone();
             let shutdown_tx_clone_tcp = shutdown_tx.clone();
 
             let tcp_state = Arc::clone(&state);
@@ -374,6 +375,7 @@ pub fn run_session(
                     match rt.block_on(save_state(
                         save_state_arc,
                         shutdown_rx_logger,
+                        shutdown_tx_logger,
                         &file_name_suffix,
                         output_path_clone.as_ref(),
                     )) {
