@@ -1004,17 +1004,24 @@ fn validate_session_metadata(session: &SessionInfo, validations: &[String]) -> i
 
     for validation in validations {
         match meta.get(validation) {
-            Some(Value::String(s)) if !s.trim().is_empty() => {
-                // good, continue
-            }
-            _ => {
+            Some(Value::String(s)) if !s.trim().is_empty() => {}
+            Some(Value::Array(arr)) if !arr.is_empty() => {}
+            Some(Value::Table(map)) if !map.is_empty() => {}
+
+            Some(Value::Float(_) | Value::Integer(_) | Value::Datetime(_)) => {}
+
+            Some(Value::Boolean(_)) => {}
+            None => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!(
-                        "Metadata key `{}` is missing or not a non-empty string",
-                        validation
-                    ),
-                ))
+                    format!("Metadata key `{}` is missing or null", validation),
+                ));
+            }
+            Some(Value::String(_)) | Some(Value::Array(_)) | Some(Value::Table(_)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Metadata key `{}` exists but is empty", validation),
+                ));
             }
         }
     }
