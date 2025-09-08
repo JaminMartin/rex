@@ -64,7 +64,8 @@ pub struct ClickhouseResultsPrimative {
     pub result_type: String,
     pub result_info: String,
     pub result_status: bool,
-    pub limit_value: f64,
+    pub upper_bound: f64,
+    pub lower_bound: f64,
     pub measured_value: f64,
     pub result_meta: String,
 }

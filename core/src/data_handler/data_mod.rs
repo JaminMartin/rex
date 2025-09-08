@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -108,7 +109,10 @@ pub struct SessionResults {
     pub result_name: String,
     pub result_description: String,
     pub result_status: bool,
-    pub result_criteria: Option<f64>,
+    #[serde(alias = "upper_bound", alias = "ub")]
+    pub result_upper_bound: Option<f64>,
+    #[serde(alias = "lower_bound", alias = "lb")]
+    pub result_lower_bound: Option<f64>,
     pub result_value: Option<f64>,
     #[serde(default)]
     pub result_meta: HashMap<String, Value>,
@@ -119,7 +123,9 @@ impl SessionResults {
             result_name: String::default(),
             result_description: String::default(),
             result_status: bool::default(),
-            result_criteria: Some(f64::default()),
+
+            result_upper_bound: Some(f64::default()),
+            result_lower_bound: Some(f64::default()),
             result_value: Some(f64::default()),
             result_meta: HashMap::default(),
         }
@@ -131,7 +137,8 @@ impl SessionResults {
             result_type: self.result_name.clone(),
             result_info: self.result_description.clone(),
             result_status: self.result_status,
-            limit_value: self.result_criteria.unwrap_or_default(),
+            upper_bound: self.result_upper_bound.unwrap_or_default(),
+            lower_bound: self.result_lower_bound.unwrap_or_default(),
             measured_value: self.result_value.unwrap_or_default(),
             result_meta: serde_json::to_string(&self.result_meta)
                 .expect("failed to serialize result_meta"),
@@ -573,7 +580,46 @@ impl ServerState {
 
         for (key, entity) in &self.entities {
             match entity {
-                Entity::Results(_result_info) => {}
+                Entity::Results(result_info) => {
+                    if !root.contains_key("results") {
+                        root.insert("results".to_string(), Value::Table(Table::new()));
+                    }
+                    let results_table = root
+                        .get_mut("results")
+                        .and_then(|v| v.as_table_mut())
+                        .unwrap();
+                    let mut individual_result_table = Table::new();
+
+                    individual_result_table.insert(
+                        "result_description".to_string(),
+                        Value::String(result_info.result_description.clone()),
+                    );
+                    individual_result_table.insert(
+                        "result_status".to_string(),
+                        Value::Boolean(result_info.result_status),
+                    );
+                    if let Some(ub) = result_info.result_upper_bound {
+                        individual_result_table
+                            .insert("result_upper_bound".to_string(), Value::Float(ub));
+                    }
+                    if let Some(lb) = result_info.result_lower_bound {
+                        individual_result_table
+                            .insert("result_lower_bound".to_string(), Value::Float(lb));
+                    }
+                    if let Some(val) = result_info.result_value {
+                        individual_result_table
+                            .insert("result_value".to_string(), Value::Float(val));
+                    }
+
+                    for (config_key, config_value) in &result_info.result_meta {
+                        individual_result_table.insert(config_key.clone(), config_value.clone());
+                    }
+
+                    results_table.insert(
+                        result_info.result_name.clone(),
+                        Value::Table(individual_result_table),
+                    );
+                }
                 Entity::Session(session_setup) => {
                     if !root.contains_key("session") {
                         root.insert("session".to_string(), Value::Table(Table::new()));
@@ -803,6 +849,8 @@ impl ServerState {
                 "No entity of type Session found",
             ));
         }
+        let has_custom_keys = self.entities.values();
+
         Ok(())
     }
 
