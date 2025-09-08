@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -29,6 +28,7 @@ pub struct Configuration {
 pub struct GeneralConfig {
     pub port: String,
     pub interpreter: String,
+    pub validations: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -839,18 +839,28 @@ impl ServerState {
     pub fn validate(&self) -> io::Result<()> {
         log::trace!("Validating state, entities: {:?}", self.entities);
 
-        let has_session_setup = self
-            .entities
-            .values()
-            .any(|entity| matches!(entity, Entity::Session(_)));
-        if !has_session_setup {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "No entity of type Session found",
-            ));
-        }
-        let has_custom_keys = self.entities.values();
+        let session = self.entities.values().find_map(|entity| {
+            if let Entity::Session(info) = entity {
+                Some(info)
+            } else {
+                None
+            }
+        });
 
+        let session = match session {
+            Some(s) => s,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "No entity of type Session found",
+                ))
+            }
+        };
+
+        let conf = get_configuration().expect("Failed to read configuration file");
+        if let Some(validations) = conf.general.validations {
+            validate_session_metadata(&session.info, &validations)?;
+        }
         Ok(())
     }
 
@@ -980,4 +990,34 @@ fn parse_external_metadata(meta_data: String) -> Option<HashMap<String, Value>> 
         Ok(meta) => meta,
         Err(_) => None,
     }
+}
+fn validate_session_metadata(session: &SessionInfo, validations: &[String]) -> io::Result<()> {
+    let meta = match &session.meta {
+        Some(m) => &m.meta,
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Session metadata missing",
+            ))
+        }
+    };
+
+    for validation in validations {
+        match meta.get(validation) {
+            Some(Value::String(s)) if !s.trim().is_empty() => {
+                // good, continue
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Metadata key `{}` is missing or not a non-empty string",
+                        validation
+                    ),
+                ))
+            }
+        }
+    }
+
+    Ok(())
 }
