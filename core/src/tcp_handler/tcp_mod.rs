@@ -197,6 +197,7 @@ async fn handle_entity(
 pub async fn save_state(
     state: Arc<Mutex<ServerState>>,
     mut shutdown_rx: broadcast::Receiver<()>,
+    shutdown_tx: broadcast::Sender<()>,
     file_name_suffix: &str,
     output_path: &String,
 ) -> io::Result<String> {
@@ -204,6 +205,8 @@ pub async fn save_state(
     tokio::time::sleep(Duration::from_secs(1)).await;
     let mut output_file_name = String::new();
     let _ = output_file_name;
+
+    let mut validated_once = false;
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -211,14 +214,19 @@ pub async fn save_state(
                 while retries > 0 {
                     {
                         let state_guard = state.lock().await;
-                        if let Err(err) = state_guard.validate() {
-                            log::warn!("Validation failed: {err:?}. Retrying in 5 seconds...");
-                            retries -= 1;
-                            if retries == 0 {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    format!("State is invalid after retry: {err:?}"),
-                                ));
+                        if !validated_once {
+                            if let Err(err) = state_guard.validate() {
+                                log::warn!("Validation failed: {err:?}. Retrying in 5 seconds...");
+                                retries -= 1;
+                                if retries == 0 {
+                                    let _ = shutdown_tx.send(());
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!("State is invalid after retry: {err:?}"),
+                                    ));
+                                }
+                            } else {
+                                validated_once = true;
                             }
                         } else {
                             let file_name = match state_guard.get_session_name() {
