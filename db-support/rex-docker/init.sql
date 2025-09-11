@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS results_store (
     result_info String,
     result_status Bool,
     measured_value Float64,
-    limit_value Float64,
+    upper_bound Float64,
+    lower_bound Float64,
     result_meta JSON,
 ) ENGINE = MergeTree ORDER BY (session_id, result_type);
