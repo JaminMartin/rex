@@ -69,8 +69,6 @@ async fn handle_connection(
                     continue;
                 }
 
-
-
                 log::debug!("Raw data stream:{trimmed}");
 
                 if handle_command(trimmed, &mut writer, &state, &shutdown_tx).await {
@@ -82,7 +80,6 @@ async fn handle_connection(
 
                 if handle_entity(trimmed, &mut writer, &state).await {
                     continue;
-
                 }
 
                 log::error!("Unknown message format: {}", trimmed);
@@ -329,7 +326,6 @@ pub async fn send_to_clickhouse(
                 insert_measure.write(m).await?;
             }
         }
-
 
         let mut insert_conf = client.insert(&config.device_meta_table)?;
         let device_conf = state

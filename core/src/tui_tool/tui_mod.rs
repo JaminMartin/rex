@@ -252,13 +252,10 @@ impl App {
 
             Err(_e) => {
                 if self.connection_status {
-                    log::warn!(
-                        "Not connected to address {addr}. Data server is not running."
-                    );
+                    log::warn!("Not connected to address {addr}. Data server is not running.");
                     self.connection_status = false;
                 }
                 Ok(())
-
             }
         }
     }
@@ -269,12 +266,9 @@ impl App {
             }
             Err(_e) => {
                 if self.connection_status {
-                    log::warn!(
-                        "Not connected to address {addr}. Data server is not running."
-                    );
+                    log::warn!("Not connected to address {addr}. Data server is not running.");
                     self.connection_status = false;
                 }
-
             }
         }
     }
@@ -285,9 +279,7 @@ impl App {
             }
             Err(_e) => {
                 if self.connection_status {
-                    log::warn!(
-                        "Not connected to address {addr}. Data server is not running."
-                    );
+                    log::warn!("Not connected to address {addr}. Data server is not running.");
                     self.connection_status = false;
                 }
             }
@@ -306,9 +298,7 @@ impl App {
             }
             Err(_e) => {
                 if self.connection_status {
-                    log::warn!(
-                        "Not connected to address {addr}. Data server is not running."
-                    );
+                    log::warn!("Not connected to address {addr}. Data server is not running.");
                     self.connection_status = false;
                 }
             }

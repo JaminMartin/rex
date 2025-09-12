@@ -1,5 +1,3 @@
-
-
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -12,7 +10,6 @@ use time::macros::format_description;
 use time::OffsetDateTime;
 use toml::{Table, Value};
 
-
 use uuid::Uuid;
 
 use crate::db::{
@@ -20,7 +17,6 @@ use crate::db::{
     ClickhouseMeasurements, ClickhouseResults, ClickhouseResultsPrimative, ClickhouseServer,
     SessionClickhouse,
 };
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Configuration {
@@ -44,7 +40,6 @@ pub struct EmailServer {
     pub port: Option<String>,
     pub from_address: String,
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Entity {
@@ -355,7 +350,6 @@ impl Device {
         });
     }
     pub fn to_clickhouse_measurements(&self, id: Uuid) -> Option<ClickhouseMeasurements> {
-
         let parsed_timestamps: HashMap<String, Vec<OffsetDateTime>> = self
             .timestamps
             .iter()
@@ -397,7 +391,6 @@ impl Device {
                     .iter()
                     .enumerate()
                     .flat_map(|(i, v)| {
-
                         v.iter().enumerate().map({
                             let ts_value = parsed_timestamps.clone();
                             let unit = measurement.unit.clone();
@@ -415,7 +408,6 @@ impl Device {
                                     .copied()
                                     .unwrap_or_else(OffsetDateTime::now_utc),
                             }
-
                         })
                     })
                     .collect::<Vec<_>>(),
@@ -426,13 +418,11 @@ impl Device {
     }
 
     pub fn to_clickhouse_config(&self, id: Uuid) -> Option<ClickhouseDevicePrimative> {
-
         let conf = ClickhouseDevicePrimative {
             session_id: id,
             device_name: self.device_name.to_string(),
             device_config: serde_json::to_string(&self.device_config)
                 .expect("Cannot unwrap config into valid json"),
-
         };
 
         Some(conf)
@@ -809,7 +799,6 @@ impl ServerState {
         }
     }
     pub fn device_config_ch(&self, id: Uuid) -> Option<ClickhouseDevices> {
-
         let device_data: ClickhouseDevices = ClickhouseDevices {
             devices: self
                 .entities

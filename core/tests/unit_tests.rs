@@ -90,7 +90,6 @@ fn test_tcp_server_basic_connection() {
             shutdown_tx_clone,
         ))
         .unwrap();
-
     });
 
     std::thread::sleep(std::time::Duration::from_secs(1));

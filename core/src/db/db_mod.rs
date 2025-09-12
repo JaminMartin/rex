@@ -1,4 +1,3 @@
-
 use clickhouse::Row;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -21,14 +20,13 @@ pub struct ClickhouseServer {
 pub struct SessionClickhouse {
     #[serde(with = "clickhouse::serde::uuid")]
     pub session_id: Uuid,
-me: String,
+    pub start_time: String,
     pub end_time: String,
     pub name: String,
     pub email: String,
     pub session_name: String,
     pub session_description: String,
     pub session_meta: String,
-
 }
 
 #[derive(Debug, Row, Clone, Serialize)]
@@ -51,7 +49,6 @@ pub struct ClickhouseMeasurements {
 #[derive(Debug, Row, Clone, Serialize, Deserialize)]
 pub struct ClickhouseDevicePrimative {
     #[serde(with = "clickhouse::serde::uuid")]
-
     pub session_id: Uuid,
     pub device_name: String,
     pub device_config: String,
@@ -60,7 +57,6 @@ pub struct ClickhouseDevicePrimative {
 pub struct ClickhouseDevices {
     pub devices: Vec<ClickhouseDevicePrimative>,
 }
-
 
 #[derive(Debug, Row, Clone, Serialize, Deserialize)]
 pub struct ClickhouseResultsPrimative {
@@ -78,4 +74,3 @@ pub struct ClickhouseResultsPrimative {
 pub struct ClickhouseResults {
     pub results: Vec<ClickhouseResultsPrimative>,
 }
-

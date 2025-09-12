@@ -32,7 +32,6 @@ use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
 
-
 static LOGGER_INIT: Once = Once::new();
 
 pub fn init_logger(log_level: LevelFilter, interactive: bool) {
@@ -161,7 +160,6 @@ const fn default_delay() -> u64 {
 }
 const fn default_dry_run() -> bool {
     false
-
 }
 const fn default_loops() -> u8 {
     1
@@ -228,12 +226,10 @@ pub fn run_session(
             let script_path_clone = Arc::clone(&script_path);
             log::info!("Server is starting...");
 
-
             let state = Arc::new(Mutex::new(ServerState::new(
                 uuid,
                 additional_metadata.clone(),
             )));
-
 
             let shutdown_rx_tcp = shutdown_tx.subscribe();
             let shutdown_rx_server_satus = shutdown_tx.subscribe();
@@ -290,7 +286,6 @@ pub fn run_session(
             env::set_var("REX_STORE", env::temp_dir());
             env::set_var("REX_UUID", uuid.to_string());
 
-
             let tui_thread = if args.interactive {
                 let port_tui = port.clone();
                 Some(thread::spawn(move || {
@@ -312,7 +307,6 @@ pub fn run_session(
                 None
             };
             let tcp_server_thread = thread::spawn(move || {
-
                 let addr = format!("0.0.0.0:{port}");
 
                 let rt = match tokio::runtime::Runtime::new() {
@@ -417,7 +411,6 @@ pub fn run_session(
                 }
                 None
             };
-
 
             let tcp_server_result = tcp_server_thread.join();
             let interpreter_thread_result = interpreter_thread.join();
@@ -682,7 +675,6 @@ pub fn process_args(original_args: Vec<String>) -> Vec<String> {
     log::warn!("cleaned args: {cleaned_args:?}");
     cleaned_args
 }
-
 
 fn is_port_available(port: &str) -> bool {
     TcpListener::bind(format!("0.0.0.0:{port}")).is_ok()
