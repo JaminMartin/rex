@@ -19,10 +19,20 @@ async fn send_test_device_data(addr: SocketAddr) -> tokio::io::Result<()> {
     println!("Attempting to connect to {}", addr);
     let mut stream = TcpStream::connect(addr).await?;
     println!("Successfully connected to server");
+    let mut measurements = HashMap::new();
+    measurements.insert(
+        "test_measurement".to_string(),
+        Measurement {
+            data: MeasurementData::Single(vec![1.0, 2.0, 3.0]),
+            unit: "V".to_string(),
+        },
+    );
+
     let test_device = Device {
         device_name: "test_device".to_string(),
         device_config: HashMap::new(),
-        measurements: HashMap::new(),
+        measurements,
+        timestamps: HashMap::new(),
     };
     let json = serde_json::to_string(&test_device).unwrap();
     println!("Sending data to server: {}", json);
@@ -66,14 +76,20 @@ async fn send_test_device_data(addr: SocketAddr) -> tokio::io::Result<()> {
 fn test_tcp_server_basic_connection() {
     let state = Arc::new(Mutex::new(ServerState::default()));
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-  
-    let addr = "127.0.0.1:8080".to_string();
+
+    let addr = "127.0.0.1:7676".to_string();
     let addr_clone = addr.clone();
     let shutdown_tx_clone = shutdown_tx.clone();
     let tcp_server_thread = thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(start_tcp_server(addr_clone, state, shutdown_rx, shutdown_tx_clone))
-            .unwrap();
+
+        rt.block_on(start_tcp_server(
+            addr_clone,
+            state,
+            shutdown_rx,
+            shutdown_tx_clone,
+        ))
+        .unwrap();
     });
 
     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -125,51 +141,4 @@ fn test_sanitize_filename() {
         sanitize_filename("file / name / test".to_string()),
         "file___name___test"
     );
-}
-
-#[test]
-fn test_load_data() {
-    // Write a sample TOML string for testing
-    let toml_content = r#"[device.Test_DAQ.data]
-counts = [778.2368218901281, 6377.393470601288, 2316.8743649537096]
-voltage = [778.2368218901281, 6377.393470601288, 2316.8743649537096]
-trace = [[1.1,2.2,3.3],[4.4,5.5,6.6],[7.7,8.8,9.9],[10.0,11.1, 12.2]]
-"#;
-    let temp_file = "test_data.toml";
-    std::fs::write(temp_file, toml_content).expect("Failed to write temporary TOML file");
-
-    let data = load_experimental_data(temp_file);
-    std::fs::remove_file(temp_file).expect("Failed to delete temporary TOML file");
-
-    assert!(
-        data.contains_key("Test_DAQ"),
-        "Test_DAQ section not found in the data"
-    );
-    let test_daq_data = data.get("Test_DAQ").expect("Missing Test_DAQ section");
-
-    let counts = test_daq_data.get("counts").expect("Missing counts data");
-    match counts {
-        MeasurementData::Single(values) => assert_eq!(
-            values,
-            &vec![778.2368218901281, 6377.393470601288, 2316.8743649537096]
-        ),
-        _ => panic!("Unexpected data format for counts"),
-    }
-
-    let voltage = test_daq_data.get("voltage").expect("Missing voltage data");
-    match voltage {
-        MeasurementData::Single(values) => assert_eq!(
-            values,
-            &vec![778.2368218901281, 6377.393470601288, 2316.8743649537096]
-        ),
-        _ => panic!("Unexpected data format for voltage"),
-    }
-    let trace = test_daq_data.get("trace").expect("Missing voltage data");
-    match trace {
-        MeasurementData::Multi(values) => assert_eq!(
-            values,
-            &vec![vec![1.1,2.2,3.3],vec![4.4,5.5,6.6],vec![7.7,8.8,9.9],vec![10.0,11.1, 12.2]]
-        ),
-        _ => panic!("Unexpected data format for voltage"),
-    }
 }

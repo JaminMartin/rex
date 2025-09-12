@@ -34,6 +34,7 @@ pub async fn run_tui(address: &str, remote: bool) -> tokio::io::Result<()> {
 
     let tick_rate = Duration::from_millis(100);
     let app = App::new();
+
     let res = run_app(&mut terminal, app, tick_rate, address, remote);
 
     disable_raw_mode()?;
@@ -78,9 +79,11 @@ struct App {
     x_axis_stream: Option<StreamReference>,
     y_axis_stream: Option<StreamReference>,
     log_messages: Vec<String>,
+    tcp_stream: Option<TcpStream>,
     connection_status: bool,
     current_device_streams: Vec<String>,
     show_popup: bool,
+    has_warned_disconnected: bool,
 }
 
 impl App {
@@ -106,40 +109,114 @@ impl App {
             current_device_streams,
             connection_status: true,
             show_popup: false,
+            tcp_stream: None,
+            has_warned_disconnected: false,
+        }
+    }
+
+    pub fn connect_to_data_server(&mut self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+        match TcpStream::connect(addr) {
+            Ok(stream) => {
+                self.tcp_stream = Some(stream);
+                self.connection_status = true;
+                if self.has_warned_disconnected {
+                    self.clear_chart_state();
+                }
+                self.has_warned_disconnected = false;
+                log::info!("Connected to server at {addr}");
+                Ok(())
+            }
+            Err(e) => {
+                self.tcp_stream = None;
+                self.connection_status = false;
+
+                if !self.has_warned_disconnected {
+                    log::warn!("Failed to connect to {addr}: {e}");
+                    self.has_warned_disconnected = true;
+                }
+
+                Err(e.into())
+            }
+        }
+    }
+    fn check_connection(&mut self, addr: &str) -> bool {
+        // Check if we have a connection
+        if self.tcp_stream.is_none() {
+            if let Err(_) = self.connect_to_data_server(addr) {
+                return false;
+            }
+        }
+        true
+    }
+    fn clear_chart_state(&mut self) {
+        self.x_axis_stream = None;
+        self.y_axis_stream = None;
+        self.devices.clear();
+        self.devices_state.select(if !self.devices.is_empty() {
+            Some(0)
+        } else {
+            None
+        });
+        self.streams_state.select(None);
+        self.current_device_streams.clear();
+        log::info!("Cleared chart state due to connection change");
+    }
+    fn send_command(
+        &mut self,
+        addr: &str,
+        command: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        if !self.check_connection(addr) {
+            return Err("Not connected to server".into());
+        }
+
+        if let Some(ref mut stream) = self.tcp_stream {
+            // Send command
+            match stream.write_all(command.as_bytes()) {
+                Ok(_) => {
+                    if let Err(e) = stream.flush() {
+                        log::error!("Failed to flush stream: {e}");
+                        self.tcp_stream = None;
+                        self.connection_status = false;
+                        return Err(e.into());
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to write command: {e}");
+                    self.tcp_stream = None;
+                    self.connection_status = false;
+                    return Err(e.into());
+                }
+            }
+
+            // Read response
+            let mut reader = BufReader::new(stream);
+            let mut response = String::new();
+
+            match reader.read_line(&mut response) {
+                Ok(0) => {
+                    log::info!("Server closed connection");
+                    self.tcp_stream = None;
+                    self.connection_status = false;
+                    Err("Server closed connection".into())
+                }
+                Ok(_) => Ok(response.trim().to_string()),
+                Err(e) => {
+                    log::error!("Failed to read response: {e}");
+                    self.tcp_stream = None;
+                    self.connection_status = false;
+                    Err(e.into())
+                }
+            }
+        } else {
+            Err("No connection available".into())
         }
     }
     pub fn fetch_server_data(&mut self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let mut stream = match TcpStream::connect(addr) {
-            Ok(stream) => stream,
-            Err(_) => {
-                match self.connection_status {
-                    true => {
-                        log::warn!(
-                            "Not connected to address {}. Data server is not running.",
-                            addr,
-                        );
-                        self.connection_status = false;
-                    }
-                    false => {}
-                };
-                return Ok(());
-            }
-        };
-
-        stream.write_all(b"GET_DATASTREAM\n")?;
-        stream.flush()?;
-
-        let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-
-        match reader.read_line(&mut response) {
-            Ok(0) => {
-                log::info!("Experiment host closed{}", addr);
-            }
-            Ok(_) => {
-                let trimmed = response.trim();
-                if !trimmed.is_empty() {
-                    match serde_json::from_str::<ServerResponse>(trimmed) {
+        match self.send_command(addr, "GET_DATASTREAM\n") {
+            Ok(response) => {
+                if !response.is_empty() {
+                    match serde_json::from_str::<ServerResponse>(&response) {
                         Ok(server_response) => {
                             self.devices = server_response
                                 .response
@@ -167,133 +244,63 @@ impl App {
                                 })
                                 .collect();
                         }
-                        Err(e) => log::error!("JSON Deserialization Error: {}", e),
+                        Err(e) => log::error!("JSON Deserialization Error: {e}"),
                     }
                 }
+                Ok(())
             }
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
-                log::info!("Rex Server shutdown, you can exit the TUI now");
-            }
-            Err(e) => {
-                log::error!("Read Error: {}", e);
+
+            Err(_e) => {
+                if self.connection_status {
+                    log::warn!("Not connected to address {addr}. Data server is not running.");
+                    self.connection_status = false;
+                }
+                Ok(())
             }
         }
-
-        Ok(())
     }
-
     fn kill_server(&mut self, addr: &str) {
-        let mut stream = match TcpStream::connect(addr) {
-            Ok(stream) => stream,
-            Err(_) => {
-                match self.connection_status {
-                    true => {
-                        log::warn!(
-                            "Not connected to address {}. Data server is not running.",
-                            addr,
-                        );
-                        self.connection_status = false;
-                    }
-                    false => {}
-                };
-                return;
+        match self.send_command(addr, "KILL\n") {
+            Ok(response) => {
+                log::info!("Kill command response: {response}");
             }
-        };
-
-        let _ = stream.write_all(b"KILL\n");
-        let _ = stream.flush();
-
-        let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-
-        match reader.read_line(&mut response) {
-            Ok(0) => {
-                log::info!("Experiment host closed{}", addr);
-            }
-            Ok(_) => {
-                let trimmed = response.trim();
-                log::info!("{:?}", trimmed)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
-                log::info!("Rex Server shutdown, you can exit the TUI now");
-            }
-            Err(e) => {
-                log::error!("Read Error: {}", e);
+            Err(_e) => {
+                if self.connection_status {
+                    log::warn!("Not connected to address {addr}. Data server is not running.");
+                    self.connection_status = false;
+                }
             }
         }
     }
     fn pause_server(&mut self, addr: &str) {
-        let mut stream = match TcpStream::connect(addr) {
-            Ok(stream) => stream,
-            Err(_) => {
-                match self.connection_status {
-                    true => {
-                        log::warn!(
-                            "Not connected to address {}. Data server is not running.",
-                            addr,
-                        );
-                        self.connection_status = false;
-                    }
-                    false => {}
-                };
-                return;
+        match self.send_command(addr, "PAUSE_STATE\n") {
+            Ok(response) => {
+                log::info!("Pause command response: {response}");
             }
-        };
-
-        let _ = stream.write_all(b"PAUSE_STATE\n");
-        let _ = stream.flush();
-
-        let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-
-        match reader.read_line(&mut response) {
-            Ok(0) => {
-                log::info!("Experiment host closed{}", addr);
-            }
-            Ok(_) => {
-                let trimmed = response.trim();
-                log::info!("{:?}", trimmed)
-            }
-            Err(e) => {
-                log::error!("Read Error: {}", e);
+            Err(_e) => {
+                if self.connection_status {
+                    log::warn!("Not connected to address {addr}. Data server is not running.");
+                    self.connection_status = false;
+                }
             }
         }
     }
-
+    fn disconnect(&mut self) {
+        if let Some(stream) = self.tcp_stream.take() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        self.connection_status = false;
+    }
     fn resume_server(&mut self, addr: &str) {
-        let mut stream = match TcpStream::connect(addr) {
-            Ok(stream) => stream,
-            Err(_) => {
-                match self.connection_status {
-                    true => {
-                        log::warn!(
-                            "Not connected to address {}. Data server is not running.",
-                            addr,
-                        );
-                        self.connection_status = false;
-                    }
-                    false => {}
-                };
-                return;
+        match self.send_command(addr, "RESUME_STATE\n") {
+            Ok(response) => {
+                log::info!("Resume command response: {response}");
             }
-        };
-
-        let _ = stream.write_all(b"RESUME_STATE\n");
-        let _ = stream.flush();
-
-        let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-
-        match reader.read_line(&mut response) {
-            Ok(0) => {
-                log::info!("Experiment host closed{}", addr);
-            }
-            Ok(_) => {
-                let trimmed = response.trim();
-                log::info!("{:?}", trimmed)
-            }
-            Err(e) => {
-                log::error!("Read Error: {}", e);
+            Err(_e) => {
+                if self.connection_status {
+                    log::warn!("Not connected to address {addr}. Data server is not running.");
+                    self.connection_status = false;
+                }
             }
         }
     }
@@ -431,7 +438,11 @@ impl App {
         self.update_current_device_streams();
     }
 }
-
+impl Drop for App {
+    fn drop(&mut self) {
+        self.disconnect();
+    }
+}
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     mut app: App,
@@ -439,6 +450,7 @@ fn run_app<B: Backend>(
     address: &str,
     remote: bool,
 ) -> io::Result<()> {
+    let _ = app.connect_to_data_server(address);
     let mut last_tick = Instant::now();
     loop {
         terminal.draw(|f| ui(f, &mut app))?;
@@ -455,7 +467,7 @@ fn run_app<B: Backend>(
                             true => return Ok(()),
 
                             false => {
-                                app.kill_server(&address);
+                                app.kill_server(address);
                                 return Ok(());
                             }
                         },
@@ -464,7 +476,7 @@ fn run_app<B: Backend>(
                         KeyCode::Right => app.next_stream(),
                         KeyCode::Left => app.previous_stream(),
                         KeyCode::Char('x') => app.set_x_axis(),
-                        KeyCode::Char('k') => app.kill_server(&address),
+                        KeyCode::Char('k') => app.kill_server(address),
                         KeyCode::Char('y') => app.set_y_axis(),
                         KeyCode::Char('m') => app.show_popup = !app.show_popup,
                         KeyCode::Char('c') => {
@@ -473,10 +485,10 @@ fn run_app<B: Backend>(
                             log::info!("Cleared axis selections");
                         }
                         KeyCode::Char('p') => {
-                            app.pause_server(&address);
+                            app.pause_server(address);
                         }
                         KeyCode::Char('r') => {
-                            app.resume_server(&address);
+                            app.resume_server(address);
                         }
                         _ => {}
                     }
@@ -539,14 +551,14 @@ fn ui(f: &mut Frame, app: &mut App) {
             let x_labels: Vec<Span> = (0..=4)
                 .map(|i| {
                     let val = x_min + (i as f64) * (x_max - x_min) / 4.0;
-                    Span::styled(format!("{:.2}", val), Style::default().fg(Color::White))
+                    Span::styled(format_axis(val), Style::default().fg(Color::White))
                 })
                 .collect();
 
             let y_labels: Vec<Span> = (0..=4)
                 .map(|i| {
                     let val = y_min + (i as f64) * (y_max - y_min) / 4.0;
-                    Span::styled(format!("{:.2}", val), Style::default().fg(Color::White))
+                    Span::styled(format_axis(val), Style::default().fg(Color::White))
                 })
                 .collect();
             let chart = Chart::new(datasets)
@@ -723,4 +735,15 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let [area] = vertical.areas(area);
     let [area] = horizontal.areas(area);
     area
+}
+
+fn format_axis(val: f64) -> String {
+    let abs_val = val.abs();
+    if abs_val == 0.0 {
+        "0".to_string()
+    } else if !(0.01..1000.0).contains(&abs_val) {
+        format!("{val:.2e}")
+    } else {
+        format!("{val:.2}")
+    }
 }

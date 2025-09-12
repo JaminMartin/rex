@@ -1,7 +1,7 @@
-
 use clickhouse::Row;
-use uuid::Uuid;
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClickhouseServer {
@@ -11,37 +11,45 @@ pub struct ClickhouseServer {
     pub username: String,
     pub password: String,
     pub measurement_table: String,
-    pub experiment_meta_table: String,
+    pub session_meta_table: String,
     pub device_meta_table: String,
+    pub results_table: String,
 }
 
 #[derive(Debug, Row, Serialize)]
-pub struct ExperimentClickhouse {
+pub struct SessionClickhouse {
     #[serde(with = "clickhouse::serde::uuid")]
-    pub experiment_id: Uuid,
+    pub session_id: Uuid,
     pub start_time: String,
     pub end_time: String,
     pub name: String,
     pub email: String,
-    pub experiment_name: String,
-    pub experiment_description: String,
+    pub session_name: String,
+    pub session_description: String,
+    pub session_meta: String,
 }
 
 #[derive(Debug, Row, Clone, Serialize)]
 pub struct ClickhouseMeasurementPrimative {
     #[serde(with = "clickhouse::serde::uuid")]
-    pub experiment_id: Uuid,
+    pub session_id: Uuid,
     pub device_name: String,
     pub channel_name: String,
+    pub channel_unit: String,
     pub sample_index: u32,
     pub channel_index: u32,
     pub value: f64,
+    #[serde(with = "clickhouse::serde::time::datetime64::micros")]
+    pub timestamp: OffsetDateTime,
+}
+pub struct ClickhouseMeasurements {
+    pub measurements: Vec<ClickhouseMeasurementPrimative>,
 }
 
 #[derive(Debug, Row, Clone, Serialize, Deserialize)]
 pub struct ClickhouseDevicePrimative {
     #[serde(with = "clickhouse::serde::uuid")]
-    pub experiment_id: Uuid,
+    pub session_id: Uuid,
     pub device_name: String,
     pub device_config: String,
 }
@@ -49,6 +57,20 @@ pub struct ClickhouseDevicePrimative {
 pub struct ClickhouseDevices {
     pub devices: Vec<ClickhouseDevicePrimative>,
 }
-pub struct ClickhouseMeasurements {
-    pub measurements: Vec<ClickhouseMeasurementPrimative>,
+
+#[derive(Debug, Row, Clone, Serialize, Deserialize)]
+pub struct ClickhouseResultsPrimative {
+    #[serde(with = "clickhouse::serde::uuid")]
+    pub session_id: Uuid,
+    pub result_type: String,
+    pub result_info: String,
+    pub result_status: bool,
+    pub upper_bound: f64,
+    pub lower_bound: f64,
+    pub measured_value: f64,
+    pub result_meta: String,
+}
+#[derive(Debug, Row, Clone, Serialize, Deserialize)]
+pub struct ClickhouseResults {
+    pub results: Vec<ClickhouseResultsPrimative>,
 }

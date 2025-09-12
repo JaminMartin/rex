@@ -1,10 +1,17 @@
-use crate::data_handler::{create_time_stamp, get_configuration, ServerState};
+use crate::data_handler::{
+    create_time_stamp, get_configuration, DataSession, ServerState, SessionInfo,
+};
 use crate::mail_handler::mailer;
 use crate::tcp_handler::{save_state, send_to_clickhouse, server_status, start_tcp_server};
 use crate::tui_tool::run_tui;
-use clap::Parser;
+
+use clap::{Parser, Subcommand};
+
 use env_logger::{Builder, Target};
 use log::LevelFilter;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
 use std::env;
 use std::fmt::Debug;
 use std::io;
@@ -14,54 +21,158 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
-//use time::format_description::well_known::iso8601::Config;
+use uuid::Uuid;
+
+use std::net::TcpListener;
+use std::sync::Once;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tokio::task;
 use tui_logger;
-use std::net::TcpListener;
-/// A commandline experiment manager
+
+static LOGGER_INIT: Once = Once::new();
+
+pub fn init_logger(log_level: LevelFilter, interactive: bool) {
+    LOGGER_INIT.call_once(|| {
+        if interactive {
+            let _ = tui_logger::init_logger(log_level);
+        } else {
+            let mut builder = Builder::new();
+            builder
+                .filter_level(log_level)
+                .target(Target::Stdout)
+                .format_timestamp_secs();
+            let _ = builder.try_init(); // Use try_init to be safe
+        }
+    });
+}
+
+pub fn get_log_level(verbosity: u8) -> LevelFilter {
+    match verbosity {
+        0 => LevelFilter::Error,
+        1 => LevelFilter::Warn,
+        2 => LevelFilter::Info,
+        3 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MinimalSessionInfo {
+    pub name: String,
+    pub email: String,
+    pub session_name: String,
+    pub session_description: String,
+    pub devices: Option<HashMap<String, DeviceConfig>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DeviceConfig {
+    #[serde(flatten)]
+    pub config: HashMap<String, toml::Value>,
+}
+
+#[derive(Serialize)]
+struct ConfigOverride {
+    session: DataSession,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device: Option<HashMap<String, DeviceConfig>>,
+}
+
+impl From<MinimalSessionInfo> for DataSession {
+    fn from(minimal: MinimalSessionInfo) -> Self {
+        DataSession {
+            start_time: None,
+            end_time: None,
+            uuid: None,
+            info: SessionInfo {
+                name: minimal.name,
+                email: minimal.email,
+                session_name: minimal.session_name,
+                session_description: minimal.session_description,
+                meta: None,
+            },
+        }
+    }
+}
+/// A commandline DAQ management tool
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
+#[command(name = "rex",version, about, long_about = None)]
+pub struct Cli {
     /// desired log level, info displays summary of connected instruments & recent data. debug will include all data, including standard output from Python.
     #[arg(short, long, default_value_t = 2)]
-    verbosity: u8,
+    pub verbosity: u8,
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    Run(RunArgs),
+    View(StandaloneArgs),
+    Serve(ServeArgs),
+}
+
+/// A commandline DAQ runner
+#[derive(Parser, Debug, Clone, Deserialize, Serialize)]
+#[command(version, about, long_about = None)]
+pub struct RunArgs {
     /// Email address to receive results
     #[arg(short, long)]
     email: Option<String>,
-    /// Time delay in minutes before starting the experiment
+    /// Time delay in minutes before starting the session
     #[arg(short, long, default_value_t = 0)]
+    #[serde(default = "default_delay")]
     delay: u64,
-    /// Number of times to loop the experiment
+    /// Number of times to loop the session
     #[arg(short, long, default_value_t = 1)]
+    #[serde(default = "default_loops")]
     loops: u8,
-    /// Path to script containing the experimental setup / control flow
+    /// Path to script containing the session setup / control flow
     #[arg(short, long)]
     path: PathBuf,
     /// Dry run, will not log data. Can be used for long term monitoring
     #[arg(short = 'n', long, default_value_t = false)]
+    #[serde(default = "default_dry_run")]
     dry_run: bool,
     /// Target directory for output path
     #[arg(short, long, default_value_t = get_current_dir())]
     output: String,
     /// Enable interactive TUI mode
     #[arg(short, long)]
-    interactive: bool,
+    #[serde(default = "default_interactive")]
+    pub interactive: bool,
     /// Port overide, allows for overiding default port. Will export this as environment variable for devices to utilise.
     #[arg(short = 'P', long)]
-    port: Option<String>,
-    /// Optional path to config file used by experiment script. Useful when it is critical the script goes unmodified., 
+    pub port: Option<String>,
+    /// Optional path to config file used by DAQ script (python, matlab etc). Useful when it is critical the script goes unmodified.,
     #[arg(short, long)]
-    scirpt_config: Option<String>,
+    config: Option<String>,
+    // Additional metadata that will be stored as part of the run
+    #[arg(long, value_name = "JSON")]
+    pub meta_json: Option<String>,
 }
-/// A commandline experiment viewer
+
+const fn default_delay() -> u64 {
+    0
+}
+const fn default_dry_run() -> bool {
+    false
+}
+const fn default_loops() -> u8 {
+    1
+}
+
+const fn default_interactive() -> bool {
+    false
+}
+/// A commandline DAQ viewer
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
-struct StandaloneArgs {
-    // Port the current experiment is running on. If you are running this on the same device it will be 127.0.0.1:7676
+pub struct StandaloneArgs {
+    // Port the current session is running on. If you are running this on the same device it will be 0.0.0.0:7676
     // otherwise, please use the devices IP , device_ip:7676
     #[arg(short, long)]
     address: String,
@@ -69,50 +180,36 @@ struct StandaloneArgs {
     #[arg(short, long, default_value_t = 2)]
     verbosity: u8,
 }
-// Wrapper for generating python bindings for rex for direct inclusion with other downstream packages.
-#[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
-pub fn cli_parser_py() {
-    let (shutdown_tx, _) = broadcast::channel(1);
 
-    cli_parser_core(shutdown_tx);
+/// A commandline DAQ server
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+pub struct ServeArgs {
+    // Port the current session is running on. If you are running this on the same device it will be 0.0.0.0:7676
+    // otherwise, please use the devices IP , device_ip:7676
+    #[arg(short, long, default_value_t = 9000)]
+    pub address: u32,
+    /// desired log level, info displays summary of connected instruments & recent data. debug will include all data, including standard output from Python.
+    #[arg(short, long, default_value_t = 2)]
+    pub verbosity: u8,
 }
-// Core CLI tool used for both rex adn rex-py
-pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
-    let original_args: Vec<String> = std::env::args().collect();
 
-    let mut cleaned_args = process_args(original_args);
+// Core CLI tool used for rex
+pub fn run_session(
+    args: RunArgs,
+    shutdown_tx: broadcast::Sender<()>,
+    log_level: LevelFilter,
+    uuid: Uuid,
+) {
+    log::info!("Session starting in {} s", args.delay * 60);
 
-    if let Some(first_arg_index) = cleaned_args.iter().position(|arg| !arg.starts_with('-')) {
-        cleaned_args[first_arg_index] = "rex".to_string();
-    }
-
-    let args = Args::parse_from(cleaned_args);
-
-    let log_level = match args.verbosity {
-        0 => LevelFilter::Error,
-        1 => LevelFilter::Warn,
-        2 => LevelFilter::Info,
-        3 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
-    };
-    if args.interactive {
-        let _ = tui_logger::init_logger(log_level);
-    } else {
-        let mut builder = Builder::new();
-        builder
-            .filter_level(log_level)
-            .target(Target::Stdout)
-            .format_timestamp_secs();
-        builder.init();
-    };
-    log::info!(target: "rex", "Experiment starting in {} s", args.delay * 60);
     sleep(Duration::from_secs(&args.delay * 60));
     let interpreter_path_str = match get_configuration() {
         Ok(conf) => match conf.general.interpreter {
             interpreter => interpreter,
         },
         Err(e) => {
-            log::error!("failed to get configuration due to: {}", e);
+            log::error!("failed to get configuration due to: {e}");
             return;
         }
     };
@@ -121,80 +218,101 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
     let script_path = Arc::new(args.path);
     let interpreter_path_loop = Arc::clone(&interpreter_path);
     let output_path = Arc::new(args.output);
+    let additional_metadata = args.meta_json.unwrap_or_default();
+
     if !interpreter_path_loop.is_empty() {
         for _ in 0..args.loops {
             let interpreter_path_clone = Arc::clone(&interpreter_path);
             let script_path_clone = Arc::clone(&script_path);
             log::info!("Server is starting...");
-            
-            let state = Arc::new(Mutex::new(ServerState::new()));
-            
+
+            let state = Arc::new(Mutex::new(ServerState::new(
+                uuid,
+                additional_metadata.clone(),
+            )));
+
             let shutdown_rx_tcp = shutdown_tx.subscribe();
             let shutdown_rx_server_satus = shutdown_tx.subscribe();
             let shutdown_rx_logger = shutdown_tx.subscribe();
             let shutdown_rx_interpreter = shutdown_tx.subscribe();
             let shutdown_tx_clone_interpreter = shutdown_tx.clone();
+            let shutdown_tx_logger = shutdown_tx.clone();
             let shutdown_tx_clone_tcp = shutdown_tx.clone();
 
             let tcp_state = Arc::clone(&state);
             let server_state = Arc::clone(&state);
             let server_state_ch = Arc::clone(&state);
-            let port = match get_configuration() {
-                Ok(conf) => match conf.general.port {
-                    port => port,
-                },
+
+            let config_port = match get_configuration() {
+                Ok(conf) => conf.general.port,
                 Err(e) => {
-                    log::error!("failed to get configuration due to: {}", e);
+                    log::error!("Failed to get configuration due to: {e}");
                     return;
                 }
             };
-            let port = if is_port_available(&port) {
-                port 
+
+            let chosen_port = args.port.clone().unwrap_or(config_port);
+
+            let port = if is_port_available(&chosen_port) {
+                chosen_port
             } else {
-                log::warn!("Port {} is already in use, checking if a fall back port has been specified", port);
+                log::warn!(
+                    "Port {chosen_port} is already in use, checking if a fallback port has been specified"
+                );
+
                 match args.port {
-                    
                     Some(ref fallback_port) => {
-                        log::info!("Fall back port found! using it instead and broadcasting the environment variable");
-                        fallback_port.clone()
-                        },
-                        
+                        if fallback_port != &chosen_port {
+                            log::info!("Fallback port {fallback_port} found! Using it instead");
+                            fallback_port.clone()
+                        } else {
+                            log::error!(
+                                "The fallback port is the same as the chosen one and also in use, cancelling run"
+                            );
+                            return;
+                        }
+                    }
                     None => {
-                        log::error!("No alternative port specified, cancelling run");
-                        return}
+                        log::error!("No fallback port specified, cancelling run");
+                        return;
+                    }
                 }
             };
-            match args.scirpt_config {
-                Some(ref config) => env::set_var("REX_PROVIDED_CONFIG_PATH", &config),
-                None => {}
+
+            if let Some(ref config) = args.config {
+                let _ = setup_overwrite(&config);
             };
             env::set_var("REX_PORT", &port);
-            
+            env::set_var("REX_STORE", env::temp_dir());
+            env::set_var("REX_UUID", uuid.to_string());
+
             let tui_thread = if args.interactive {
+                let port_tui = port.clone();
                 Some(thread::spawn(move || {
                     let rt = match tokio::runtime::Runtime::new() {
                         Ok(rt) => rt,
                         Err(e) => {
-                            log::error!("Error creating Tokio runtime for TUI: {:?}", e);
+                            log::error!("Error creating Tokio runtime for TUI: {e:?}");
                             return;
                         }
                     };
                     let remote = false;
-                    match rt.block_on(run_tui("127.0.0.1:7676", remote)) {
+                    let addr = format!("0.0.0.0:{port_tui}");
+                    match rt.block_on(run_tui(&addr, remote)) {
                         Ok(_) => log::info!("TUI closed successfully"),
-                        Err(e) => log::error!("TUI encountered an error: {}", e),
+                        Err(e) => log::error!("TUI encountered an error: {e}"),
                     }
                 }))
             } else {
                 None
             };
             let tcp_server_thread = thread::spawn(move || {
+                let addr = format!("0.0.0.0:{port}");
 
-                let addr = format!("127.0.0.1:{port}", port = port);
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        log::error!("Error in thread: {:?}", e);
+                        log::error!("Error in thread: {e:?}");
                         return;
                     }
                 };
@@ -211,7 +329,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        log::error!("Error in thread: {:?}", e);
+                        log::error!("Error in thread: {e:?}");
                         return;
                     }
                 };
@@ -222,11 +340,11 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     log_level,
                     shutdown_rx_interpreter,
                 )) {
-                    log::error!("Python process failed: {:?}", e);
+                    log::error!("Python process failed: {e:?}");
                 }
 
                 if let Err(e) = shutdown_tx_clone_interpreter.send(()) {
-                    log::error!("Failed to send shutdown signal: {:?}", e);
+                    log::error!("Failed to send shutdown signal: {e:?}");
                 }
             });
 
@@ -234,7 +352,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        log::error!("Error in thread: {:?}", e);
+                        log::error!("Error in thread: {e:?}");
                         return;
                     }
                 };
@@ -253,7 +371,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     let rt = match tokio::runtime::Runtime::new() {
                         Ok(rt) => rt,
                         Err(e) => {
-                            log::error!("Failed to create Tokio runtime in Dumper Thread: {:?}", e);
+                            log::error!("Failed to create Tokio runtime in Dumper Thread: {e:?}");
                             return None;
                         }
                     };
@@ -261,6 +379,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     match rt.block_on(save_state(
                         save_state_arc,
                         shutdown_rx_logger,
+                        shutdown_tx_logger,
                         &file_name_suffix,
                         output_path_clone.as_ref(),
                     )) {
@@ -269,7 +388,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                             Some(filename)
                         }
                         Err(e) => {
-                            log::error!("Data storage thread encountered an error: {:?}", e);
+                            log::error!("Data storage thread encountered an error: {e:?}");
                             None
                         }
                     }
@@ -278,7 +397,7 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
                     Err(e) => {
-                        log::error!("Failed to create Tokio runtime in Dumper Thread: {:?}", e);
+                        log::error!("Failed to create Tokio runtime in Dumper Thread: {e:?}");
                         return;
                     }
                 };
@@ -293,7 +412,6 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                 None
             };
 
-
             let tcp_server_result = tcp_server_thread.join();
             let interpreter_thread_result = interpreter_thread.join();
             let printer_result = printer_thread.join();
@@ -302,9 +420,9 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                     Ok(resulting) => resulting,
                     Err(e) => {
                         if let Some(err) = e.downcast_ref::<String>() {
-                            log::error!("Data Storage thread encountered an error: {}", err);
+                            log::error!("Data Storage thread encountered an error: {err}");
                         } else if let Some(err) = e.downcast_ref::<&str>() {
-                            log::error!("Data Storage thread encountered an error: {}", err);
+                            log::error!("Data Storage thread encountered an error: {err}");
                         } else {
                             log::error!("Data Storage thread encountered an unknown error.");
                         }
@@ -322,14 +440,14 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
 
             for (name, result) in &results {
                 match result {
-                    Ok(_) => log::info!("{} shutdown successfully.", name),
+                    Ok(_) => log::info!("{name} shutdown successfully."),
                     Err(e) => {
                         if let Some(err) = e.downcast_ref::<String>() {
-                            log::error!("{} encountered an error: {}", name, err);
+                            log::error!("{name} encountered an error: {err}");
                         } else if let Some(err) = e.downcast_ref::<&str>() {
-                            log::error!("{} encountered an error: {}", name, err);
+                            log::error!("{name} encountered an error: {err}");
                         } else {
-                            log::error!("{} encountered an unknown error.", name);
+                            log::error!("{name} encountered an unknown error.");
                         }
                     }
                 }
@@ -337,13 +455,13 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             let output_file = match dumper_result {
                 Some(filename) => {
                     log::info!("Data Storage Thread shutdown successfully.");
-                    filename
+                    Some(filename)
                 }
                 None => {
                     log::info!(
                         "Data Storage Thread was not running, so no file output has been generated - was this a dry run?"
                     );
-                    return;
+                    None
                 }
             };
             let mut clickhouse_thread = None;
@@ -354,16 +472,26 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
                             let rt = match tokio::runtime::Runtime::new() {
                                 Ok(rt) => rt,
                                 Err(e) => {
-                                    log::error!("Error in thread: {:?}", e);
+                                    log::error!("Error in thread: {e:?}");
                                     return;
                                 }
                             };
 
-                            rt.block_on(send_to_clickhouse(server_state_ch, clickhouse_config))
-                                .unwrap();
+                            // Replace .unwrap() with proper error handling
+                            match rt
+                                .block_on(send_to_clickhouse(server_state_ch, clickhouse_config))
+                            {
+                                Ok(_) => log::info!("ClickHouse logging completed successfully"),
+                                Err(e) => {
+                                    if e.to_string().contains("No Session data found") {
+                                        log::info!("No Session data to send to ClickHouse (likely due to quick shutdown)");
+                                    } else {
+                                        log::error!("ClickHouse logging failed: {e:?}");
+                                    }
+                                }
+                            }
                         });
                         clickhouse_thread = Some(handle);
-                    } else {
                     };
                 } else {
                     log::warn!("Failed to get Clickhouse config, data will not be logged to clickhouse, however it will be logged locally");
@@ -371,37 +499,33 @@ pub fn cli_parser_core(shutdown_tx: broadcast::Sender<()>) {
             } else {
                 log::error!("Failed to get configuration.");
             };
-            match clickhouse_thread {
-                Some(tcp_handle) => {
-                    let handle = tcp_handle.join();
-                    match handle {
-                        Ok(_) => log::info!("Clickhouse process shutdown sucessfully"),
-                        Err(e) => log::error!("Error in thread {:?}", e),
-                    }
+            if let Some(tcp_handle) = clickhouse_thread {
+                let handle = tcp_handle.join();
+                match handle {
+                    Ok(_) => log::info!("Clickhouse process shutdown sucessfully"),
+                    Err(e) => log::error!("Error in thread {e:?}"),
                 }
-                None => {}
             };
 
-            log::info!("The output file directory is: {}", output_path);
-            mailer(args.email.as_ref(), &output_file);
+            if let Some(output_file) = output_file {
+                log::info!("The output file directory is: {output_path}");
+                mailer(args.email.as_ref(), &output_file);
+            }
 
-            match tui_thread {
-                Some(tui_result) => {
-                    let result = tui_result.join();
-                    match result {
-                        Ok(_) => log::info!("Tui hread shutdown successfully."),
-                        Err(e) => {
-                            if let Some(err) = e.downcast_ref::<String>() {
-                                log::error!("Tui thread encountered an error: {}", err);
-                            } else if let Some(err) = e.downcast_ref::<&str>() {
-                                log::error!("Tui thread encountered an error: {}", err);
-                            } else {
-                                log::error!("Tui thread encountered an unknown error.");
-                            }
+            if let Some(tui_result) = tui_thread {
+                let result = tui_result.join();
+                match result {
+                    Ok(_) => log::info!("Tui hread shutdown successfully."),
+                    Err(e) => {
+                        if let Some(err) = e.downcast_ref::<String>() {
+                            log::error!("Tui thread encountered an error: {err}");
+                        } else if let Some(err) = e.downcast_ref::<&str>() {
+                            log::error!("Tui thread encountered an error: {err}");
+                        } else {
+                            log::error!("Tui thread encountered an unknown error.");
                         }
                     }
                 }
-                None => {}
             };
         }
     } else {
@@ -465,7 +589,7 @@ async fn start_interpreter_process_async(
     let stdout_task = task::spawn(async move {
         let mut lines = stdout_reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            log::debug!(target: "Interpreter", "{}", line);
+            log::debug!(target: "Interpreter", "{line}");
         }
     });
 
@@ -476,16 +600,16 @@ async fn start_interpreter_process_async(
         while let Ok(Some(line)) = lines.next_line().await {
             if line.starts_with("Traceback (most recent call last):") {
                 in_traceback = true;
-                log::error!("{}", line);
+                log::error!("{line}");
             } else if in_traceback {
-                log::error!("{}", line);
+                log::error!("{line}");
                 if line.trim().is_empty() {
                     in_traceback = false;
                 }
             } else if line.contains("(Ctrl+C)") {
-                log::warn!("{}", line);
+                log::warn!("{line}");
             } else {
-                log::debug!("{}", line);
+                log::debug!("{line}");
             }
         }
     });
@@ -494,11 +618,11 @@ async fn start_interpreter_process_async(
             log::warn!("Received shutdown signal, terminating interpreter process...");
             if let Some(id) = interpreter_process.id() {
                 let _ = interpreter_process.kill().await;
-                log::info!("Interpreter process (PID: {}) terminated", id);
+                log::info!("Interpreter process (PID: {id}) terminated");
             }
         }
         status = interpreter_process.wait() => {
-            log::info!("Interpreter process exited with status: {:?}", status);
+            log::info!("Interpreter process exited with status: {status:?}");
         }
     }
     // Wait for both stdout and stderr tasks to complete
@@ -507,77 +631,93 @@ async fn start_interpreter_process_async(
     Ok(())
 }
 
-#[cfg_attr(feature = "extension-module", pyo3::pyfunction)]
-pub fn cli_standalone() {
-    let original_args: Vec<String> = std::env::args().collect();
-    //let args = Args::parse_from(original_args);
-    let mut cleaned_args = process_args(original_args);
-
-    if let Some(first_arg_index) = cleaned_args.iter().position(|arg| !arg.starts_with('-')) {
-        cleaned_args[first_arg_index] = "rex-viewer".to_string();
-    }
-    let args = StandaloneArgs::parse_from(cleaned_args);
-
-    let log_level = match args.verbosity {
-        0 => LevelFilter::Error,
-        1 => LevelFilter::Warn,
-        2 => LevelFilter::Info,
-        3 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
-    };
-
+pub fn cli_standalone(args: StandaloneArgs, log_level: LevelFilter) {
     let _ = tui_logger::init_logger(log_level);
 
     let tui_thread = Some(thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                log::error!("Error creating Tokio runtime for TUI: {:?}", e);
+                log::error!("Error creating Tokio runtime for TUI: {e:?}");
                 return;
             }
         };
         let remote = true;
         match rt.block_on(run_tui(&args.address, remote)) {
             Ok(_) => log::info!("TUI closed successfully"),
-            Err(e) => log::error!("TUI encountered an error: {}", e),
+            Err(e) => log::error!("TUI encountered an error: {e}"),
         }
     }));
 
-    match tui_thread {
-        Some(tui_result) => {
-            let result = tui_result.join();
-            match result {
-                Ok(_) => log::info!("Tui hread shutdown successfully."),
-                Err(e) => {
-                    if let Some(err) = e.downcast_ref::<String>() {
-                        log::error!("Tui thread encountered an error: {}", err);
-                    } else if let Some(err) = e.downcast_ref::<&str>() {
-                        log::error!("Tui thread encountered an error: {}", err);
-                    } else {
-                        log::error!("Tui thread encountered an unknown error.");
-                    }
+    if let Some(tui_result) = tui_thread {
+        let result = tui_result.join();
+        match result {
+            Ok(_) => log::info!("Tui hread shutdown successfully."),
+            Err(e) => {
+                if let Some(err) = e.downcast_ref::<String>() {
+                    log::error!("Tui thread encountered an error: {err}");
+                } else if let Some(err) = e.downcast_ref::<&str>() {
+                    log::error!("Tui thread encountered an error: {err}");
+                } else {
+                    log::error!("Tui thread encountered an unknown error.");
                 }
             }
         }
-        None => {}
     };
 }
 
-fn process_args(original_args: Vec<String>) -> Vec<String> {
+pub fn process_args(original_args: Vec<String>) -> Vec<String> {
     //used for removing python inserted args when rex is invoked from a python script
     let cleaned_args = original_args
         .into_iter()
         .filter(|arg| !arg.contains("python"))
         .collect();
-    log::warn!("cleaned args: {:?}", cleaned_args);
+    log::warn!("cleaned args: {cleaned_args:?}");
     cleaned_args
 }
 
-
-
 fn is_port_available(port: &str) -> bool {
-    match TcpListener::bind(format!("127.0.0.1:{}", port)) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    TcpListener::bind(format!("0.0.0.0:{port}")).is_ok()
+}
+
+pub fn setup_overwrite(config: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if std::path::Path::new(config).exists() {
+        env::set_var("REX_PROVIDED_CONFIG_PATH", config);
+    } else {
+        match serde_json::from_str::<MinimalSessionInfo>(config) {
+            Ok(data) => {
+                let session: DataSession = data.clone().into();
+                let devices = data.devices;
+                let temp_path = create_temp_config_file(&session, devices)?;
+                env::set_var(
+                    "REX_PROVIDED_OVERWRITE_PATH",
+                    temp_path.to_string_lossy().as_ref(),
+                );
+            }
+            Err(e) => {
+                return Err(
+                    format!("Config is neither a valid file path nor valid JSON: {}", e).into(),
+                );
+            }
+        }
+    };
+    Ok(())
+}
+
+fn create_temp_config_file(
+    session: &DataSession,
+    devices: Option<HashMap<String, DeviceConfig>>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let temp_dir = env::temp_dir();
+    let temp_filename = format!("rex_config_{}.toml", Uuid::new_v4());
+    let temp_path = temp_dir.join(temp_filename);
+
+    let config_file = ConfigOverride {
+        session: session.clone(),
+        device: devices,
+    };
+
+    let toml_content = toml::to_string_pretty(&config_file)?;
+    std::fs::write(&temp_path, toml_content)?;
+    Ok(temp_path)
 }
