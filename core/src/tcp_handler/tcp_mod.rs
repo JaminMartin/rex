@@ -26,7 +26,9 @@ pub async fn start_tcp_server(
     loop {
         tokio::select! {
             Ok((socket, addr)) = listener.accept() => {
+
                 log::debug!("New connection from: {addr}");
+
 
                 let shutdown_tx = shutdown_tx.clone();
                 let state = Arc::clone(&state);
@@ -37,7 +39,6 @@ pub async fn start_tcp_server(
             _ = shutdown_rx.recv() => {
                 log::info!("Shutdown signal received for TCP server.");
                 tokio::time::sleep(Duration::from_secs(3)).await;
-
                 break;
             }
         }
@@ -68,6 +69,8 @@ async fn handle_connection(
                     continue;
                 }
 
+
+
                 log::debug!("Raw data stream:{trimmed}");
 
                 if handle_command(trimmed, &mut writer, &state, &shutdown_tx).await {
@@ -79,6 +82,7 @@ async fn handle_connection(
 
                 if handle_entity(trimmed, &mut writer, &state).await {
                     continue;
+
                 }
 
                 log::error!("Unknown message format: {}", trimmed);
@@ -325,6 +329,7 @@ pub async fn send_to_clickhouse(
                 insert_measure.write(m).await?;
             }
         }
+
 
         let mut insert_conf = client.insert(&config.device_meta_table)?;
         let device_conf = state

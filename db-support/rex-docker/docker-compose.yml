@@ -9,6 +9,7 @@ services:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
       CLICKHOUSE_PASSWORD: secret # change this!
 
+
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
       - ./network.xml:/etc/clickhouse-server/config.d/network.xml
@@ -29,6 +30,7 @@ services:
           "--spider",
           "http://localhost:8123/ping",
         ]
+
       interval: 30s
       timeout: 10s
       retries: 3
@@ -45,7 +47,9 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_USERS_DEFAULT_THEME=dark
     ports:
+
       - "3000:3000"
+
     volumes:
       - grafana_data:/var/lib/grafana
       - grafana_logs:/var/log/grafana
@@ -60,6 +64,7 @@ services:
           "CMD-SHELL",
           "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1",
         ]
+
       interval: 30s
       timeout: 10s
       retries: 3
@@ -79,3 +84,4 @@ volumes:
     name: grafana_data
   grafana_logs:
     name: grafana_logs
+

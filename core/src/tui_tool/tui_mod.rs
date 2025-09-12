@@ -249,6 +249,7 @@ impl App {
                 }
                 Ok(())
             }
+
             Err(_e) => {
                 if self.connection_status {
                     log::warn!(
@@ -257,6 +258,7 @@ impl App {
                     self.connection_status = false;
                 }
                 Ok(())
+
             }
         }
     }
@@ -272,6 +274,7 @@ impl App {
                     );
                     self.connection_status = false;
                 }
+
             }
         }
     }

@@ -82,6 +82,7 @@ fn test_tcp_server_basic_connection() {
     let shutdown_tx_clone = shutdown_tx.clone();
     let tcp_server_thread = thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
+
         rt.block_on(start_tcp_server(
             addr_clone,
             state,
@@ -89,6 +90,7 @@ fn test_tcp_server_basic_connection() {
             shutdown_tx_clone,
         ))
         .unwrap();
+
     });
 
     std::thread::sleep(std::time::Duration::from_secs(1));

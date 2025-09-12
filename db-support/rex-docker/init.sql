@@ -1,4 +1,5 @@
 
+
 SET enable_json_type = 1;
 
 CREATE TABLE IF NOT EXISTS session_info (
@@ -43,3 +44,4 @@ CREATE TABLE IF NOT EXISTS results_store (
     lower_bound Float64,
     result_meta JSON,
 ) ENGINE = MergeTree ORDER BY (session_id, result_type);
+

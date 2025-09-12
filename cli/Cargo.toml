@@ -3,7 +3,9 @@ name = "rex-cli"
 edition = "2021"
 description = "Experimental control and data viewer for scientific workflows"
 publish = false
+
 version = "1.0.0"
+
 [dependencies]
 rex-core = { path = "../core", default-features = false }
 tokio = { workspace = true }
@@ -12,3 +14,4 @@ uuid = { workspace = true }
 [[bin]]
 name = "rex"
 path = "src/bin/main.rs"
+

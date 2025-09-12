@@ -1,3 +1,5 @@
+
+
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -10,6 +12,7 @@ use time::macros::format_description;
 use time::OffsetDateTime;
 use toml::{Table, Value};
 
+
 use uuid::Uuid;
 
 use crate::db::{
@@ -17,6 +20,7 @@ use crate::db::{
     ClickhouseMeasurements, ClickhouseResults, ClickhouseResultsPrimative, ClickhouseServer,
     SessionClickhouse,
 };
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Configuration {
@@ -40,6 +44,7 @@ pub struct EmailServer {
     pub port: Option<String>,
     pub from_address: String,
 }
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Entity {
@@ -350,6 +355,7 @@ impl Device {
         });
     }
     pub fn to_clickhouse_measurements(&self, id: Uuid) -> Option<ClickhouseMeasurements> {
+
         let parsed_timestamps: HashMap<String, Vec<OffsetDateTime>> = self
             .timestamps
             .iter()
@@ -364,6 +370,7 @@ impl Device {
                 (channel_name.clone(), parsed)
             })
             .collect();
+
         let measurements = self
             .measurements
             .iter()
@@ -390,6 +397,7 @@ impl Device {
                     .iter()
                     .enumerate()
                     .flat_map(|(i, v)| {
+
                         v.iter().enumerate().map({
                             let ts_value = parsed_timestamps.clone();
                             let unit = measurement.unit.clone();
@@ -407,20 +415,24 @@ impl Device {
                                     .copied()
                                     .unwrap_or_else(OffsetDateTime::now_utc),
                             }
+
                         })
                     })
                     .collect::<Vec<_>>(),
             })
             .collect::<Vec<_>>();
+
         Some(ClickhouseMeasurements { measurements })
     }
 
     pub fn to_clickhouse_config(&self, id: Uuid) -> Option<ClickhouseDevicePrimative> {
+
         let conf = ClickhouseDevicePrimative {
             session_id: id,
             device_name: self.device_name.to_string(),
             device_config: serde_json::to_string(&self.device_config)
                 .expect("Cannot unwrap config into valid json"),
+
         };
 
         Some(conf)
@@ -797,6 +809,7 @@ impl ServerState {
         }
     }
     pub fn device_config_ch(&self, id: Uuid) -> Option<ClickhouseDevices> {
+
         let device_data: ClickhouseDevices = ClickhouseDevices {
             devices: self
                 .entities
@@ -810,12 +823,14 @@ impl ServerState {
                 })
                 .collect(),
         };
+
         if device_data.devices.is_empty() {
             None
         } else {
             Some(device_data)
         }
     }
+
     pub fn results_ch(&self, id: Uuid) -> Option<ClickhouseResults> {
         let result_data: ClickhouseResults = ClickhouseResults {
             results: self
@@ -836,6 +851,7 @@ impl ServerState {
             Some(result_data)
         }
     }
+
     pub fn validate(&self) -> io::Result<()> {
         log::trace!("Validating state, entities: {:?}", self.entities);
 

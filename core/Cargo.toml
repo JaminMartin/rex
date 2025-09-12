@@ -1,7 +1,9 @@
 [package]
 name = "rex-core"
 edition = "2021"
+
 version = "1.0.0"
+
 
 [lib]
 name = "rex_core"
@@ -10,6 +12,7 @@ path = "src/lib.rs"
 
 
 [dependencies]
+
 clap = { workspace = true }
 lettre = { workspace = true }
 toml = { workspace = true }
@@ -28,6 +31,7 @@ dirs = { workspace = true }
 clickhouse = { workspace = true }
 uuid = { workspace = true }
 axum = { workspace = true }
+
 [dev-dependencies]
 regex = "1"
 tempfile = "3.3"
