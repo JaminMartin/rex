@@ -353,9 +353,9 @@ Same response format as /pause
 
 # Roadmap
 
-[] Tab support in the TUI, per tab figure type configuration
-[] Script registration, register a collection of scripts and default configs to run from the TUI or serve endpoint.
-[] rex-lite, for multi-node deployment. register scripts on a per node basis and run them via a single rex serve instance.
+- [ ] Tab support in the TUI, per tab figure type configuration
+- [ ] Script registration, register a collection of scripts and default configs to run from the TUI or serve endpoint.
+- [ ] rex-lite, for multi-node deployment. register scripts on a per node basis and run them via a single rex serve instance.
 
 # Projects using Rex
 To get some ideas of how to use rex, check out these projects using it.
