@@ -55,6 +55,12 @@
         packages.default = pkgs.callPackage ./default.nix { };
 
         packages.rex = self.packages.${system}.default;
+
+        apps.default = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/rex";
+        };
+
       }
     );
 }
