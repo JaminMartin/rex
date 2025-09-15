@@ -3,8 +3,10 @@ name = "rex-core"
 edition = "2021"
 
 version = "1.0.0"
-
-
+description = "Command line tool for automating data collection"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/JaminMartin/rex"
+homepage = "https://github.com/JaminMartin/rex"
 [lib]
 name = "rex_core"
 crate-type = ["cdylib", "rlib"]

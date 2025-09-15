@@ -22,6 +22,9 @@ classifiers = [
     "Programming Language :: Rust",
 ]
 keywords = ["cli", "rex", "experiment", "automation", "testing", "DAQ", "data acquisition"]
+dependencies = [
+    "twine>=6.2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/JaminMartin/rex"
