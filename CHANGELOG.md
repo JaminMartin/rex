@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [unreleased]
+
+### 🚀 Features
+
+- [**breaking**] Updated remote timestamp priority
+
 ## [1.0.0] — 2025-09-12
 
 ### 🚨 Breaking Changes
@@ -126,3 +132,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 - For questions or migration help, open an issue or discussion on GitHub.
 
 ---
+## [0.9.2] - 2025-05-14
+
+### 🚀 Features
+
+- [**breaking**] Added server support, metadata logging
+- [**breaking**] Removal of python bindings
+- [**breaking**] Added stricter data types for measurements
+- [**breaking**] Added more endpoints
+- [**breaking**] Remote overides
