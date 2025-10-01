@@ -2,7 +2,7 @@
 name = "rex-core"
 edition = "2021"
 
-version = "1.0.0"
+version = "1.0.1"
 description = "Command line tool for automating data collection"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/JaminMartin/rex"
