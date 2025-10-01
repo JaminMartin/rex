@@ -154,7 +154,8 @@ async fn handle_entity(
         for measure_type in device.measurements.keys() {
             device
                 .timestamps
-                .insert(measure_type.clone(), timestamp.clone());
+                .entry(measure_type.clone())
+                .or_insert(timestamp.clone());
         }
         let device_name = device.device_name.clone();
         let mut state = state.lock().await;
