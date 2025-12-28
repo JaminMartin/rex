@@ -312,15 +312,116 @@ impl Device {
             })
             .collect()
     }
-    fn latest_data_truncated(&self, max_measurements: usize) -> DeviceData {
-        let mut combined = self.latest_measurements_truncated(max_measurements);
-        let timestamps_truncated = self.latest_timestamps_truncated(max_measurements);
-        combined.extend(timestamps_truncated);
+    fn latest_data_lttb(&self, max_measurements: usize) -> DeviceData {
+        use lttb::{lttb, DataPoint};
+
+        let mut combined = HashMap::new();
+
+        for (key, measurement) in &self.measurements {
+            match &measurement.data {
+                MeasurementData::Single(single_values) => {
+                    if let Some(timestamps) = self.timestamps.get(key) {
+                        // Parse timestamps to seconds since first measurement
+                        if let Some(base_time) = timestamps.first().and_then(|s| {
+                            OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+                                .ok()
+                        }) {
+                            let data_points: Vec<DataPoint> = single_values
+                                .iter()
+                                .zip(timestamps.iter())
+                                .filter_map(|(&y, ts)| {
+                                    OffsetDateTime::parse(
+                                        ts,
+                                        &time::format_description::well_known::Rfc3339,
+                                    )
+                                    .ok()
+                                    .map(|t| {
+                                        let x = (t - base_time).as_seconds_f64();
+                                        DataPoint::new(x, y)
+                                    })
+                                })
+                                .collect();
+
+                            if data_points.len() > max_measurements {
+                                let downsampled = lttb(data_points, max_measurements);
+
+                                // Extract y values and x values (time offsets)
+                                let y_values: Vec<f64> =
+                                    downsampled.iter().map(|dp| dp.y).collect();
+                                let x_values: Vec<f64> =
+                                    downsampled.iter().map(|dp| dp.x).collect();
+
+                                combined.insert(key.clone(), y_values);
+                                combined.insert(
+                                    format!("Time since first {} measurement (s)", key),
+                                    x_values,
+                                );
+                            } else {
+                                // Not enough points to downsample, use all data
+                                combined.insert(key.clone(), single_values.clone());
+
+                                let x_values: Vec<f64> = timestamps
+                                    .iter()
+                                    .filter_map(|ts| {
+                                        OffsetDateTime::parse(
+                                            ts,
+                                            &time::format_description::well_known::Rfc3339,
+                                        )
+                                        .ok()
+                                        .map(|t| (t - base_time).as_seconds_f64())
+                                    })
+                                    .collect();
+                                combined.insert(
+                                    format!("Time since first {} measurement (s)", key),
+                                    x_values,
+                                );
+                            }
+                        }
+                    }
+                }
+                MeasurementData::Multi(multi_values) => {
+                    if let Some(latest_array) = multi_values.last() {
+                        if latest_array.len() > 100 {
+                            // Use index as x-coordinate for Multi data
+                            let data_points: Vec<DataPoint> = latest_array
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &y)| DataPoint::new(i as f64, y))
+                                .collect();
+
+                            let downsampled = lttb(data_points, 100);
+                            let y_values: Vec<f64> = downsampled.iter().map(|dp| dp.y).collect();
+
+                            combined.insert(key.clone(), y_values);
+                        } else {
+                            combined.insert(key.clone(), latest_array.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         DeviceData {
             device_name: self.device_name.clone(),
             measurements: combined,
         }
     }
+    fn latest_data_truncated(&self, max_measurements: usize) -> DeviceData {
+        let use_lttb = true; // TODO: make this a config var
+
+        if use_lttb {
+            self.latest_data_lttb(max_measurements)
+        } else {
+            let mut combined = self.latest_measurements_truncated(max_measurements);
+            let timestamps_truncated = self.latest_timestamps_truncated(max_measurements);
+            combined.extend(timestamps_truncated);
+            DeviceData {
+                device_name: self.device_name.clone(),
+                measurements: combined,
+            }
+        }
+    }
+
     pub fn truncate(&mut self) {
         self.measurements
             .iter_mut()

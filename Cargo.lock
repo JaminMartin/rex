@@ -1251,6 +1251,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lttb"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abfc750d3204167b4b1092f1c7ee3ddab3f3419627e2b0f8417bbdf2030b2448"
+
+[[package]]
 name = "lz4_flex"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1623,6 +1629,7 @@ dependencies = [
  "itertools",
  "lettre",
  "log",
+ "lttb",
  "ratatui",
  "regex",
  "serde",

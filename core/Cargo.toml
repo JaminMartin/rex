@@ -33,7 +33,7 @@ dirs = { workspace = true }
 clickhouse = { workspace = true }
 uuid = { workspace = true }
 axum = { workspace = true }
-
+lttb = { workspace = true }
 [dev-dependencies]
 regex = "1"
 tempfile = "3.3"
