@@ -14,8 +14,7 @@ use uuid::Uuid;
 
 use crate::db::{
     ClickhouseDevicePrimative, ClickhouseDevices, ClickhouseMeasurementPrimative,
-    ClickhouseMeasurements, ClickhouseResults, ClickhouseResultsPrimative, ClickhouseServer,
-    SessionClickhouse,
+    ClickhouseMeasurements, ClickhouseServer, SessionClickhouse,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,7 +44,6 @@ pub struct EmailServer {
 pub enum Entity {
     Device(Device),
     Session(DataSession),
-    Results(SessionResults),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,49 +102,6 @@ impl Default for DataSession {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SessionResults {
-    pub result_name: String,
-    pub result_description: String,
-    pub result_status: bool,
-    #[serde(alias = "upper_bound", alias = "ub")]
-    pub result_upper_bound: Option<f64>,
-    #[serde(alias = "lower_bound", alias = "lb")]
-    pub result_lower_bound: Option<f64>,
-    pub result_value: Option<f64>,
-    #[serde(default)]
-    pub result_meta: HashMap<String, Value>,
-}
-impl SessionResults {
-    pub fn default() -> Self {
-        SessionResults {
-            result_name: String::default(),
-            result_description: String::default(),
-            result_status: bool::default(),
-
-            result_upper_bound: Some(f64::default()),
-            result_lower_bound: Some(f64::default()),
-            result_value: Some(f64::default()),
-            result_meta: HashMap::default(),
-        }
-    }
-
-    pub fn to_clickhouse(&self, id: Uuid) -> Option<ClickhouseResultsPrimative> {
-        let conf = ClickhouseResultsPrimative {
-            session_id: id,
-            result_type: self.result_name.clone(),
-            result_info: self.result_description.clone(),
-            result_status: self.result_status,
-            upper_bound: self.result_upper_bound.unwrap_or_default(),
-            lower_bound: self.result_lower_bound.unwrap_or_default(),
-            measured_value: self.result_value.unwrap_or_default(),
-            result_meta: serde_json::to_string(&self.result_meta)
-                .expect("failed to serialize result_meta"),
-        };
-
-        Some(conf)
-    }
-}
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct SessionInfo {
     pub name: String,
@@ -172,6 +127,14 @@ pub enum MeasurementData {
     Single(Vec<f64>),
     Multi(Vec<Vec<f64>>),
 }
+impl MeasurementData {
+    fn convert_to_multi(&mut self) {
+        if let MeasurementData::Single(data) = self {
+            let wrapped = vec![data.clone()];
+            *self = MeasurementData::Multi(wrapped);
+        }
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Measurement {
     pub data: MeasurementData,
@@ -193,7 +156,7 @@ pub struct DeviceData {
 }
 impl Device {
     fn update(&mut self, other: Self) {
-        let timestamp = vec![create_log_timestamp()];
+        let mut other_timestamps = other.timestamps;
         for (measure_type, measurement) in other.measurements {
             match self.measurements.entry(measure_type.clone()) {
                 Entry::Occupied(mut entry) => {
@@ -209,36 +172,141 @@ impl Device {
                         continue;
                     }
 
-                    match (&mut existing_measurement.data, &measurement.data) {
+                    match (&mut existing_measurement.data, measurement.data) {
                         (
                             MeasurementData::Single(existing),
                             MeasurementData::Single(new_values),
                         ) => {
-                            existing.extend(new_values.clone());
+                            if existing.len() > 1 && new_values.len() > 1 {
+                                if existing.len() == new_values.len() {
+                                    log::info!(
+                                        "Converting '{}' from Single to Multi (detected repeated length {})",
+                                        measure_type,
+                                        existing.len()
+                                    );
+                                    existing_measurement.data.convert_to_multi();
+
+                                    if let MeasurementData::Multi(multi_data) =
+                                        &mut existing_measurement.data
+                                    {
+                                        multi_data.push(new_values);
+                                    }
+                                } else {
+                                    log::error!(
+                                        "Invalid data for '{}': existing Single has length {}, new Single has length {}. Cannot merge.",
+                                        measure_type,
+                                        existing.len(),
+                                        new_values.len()
+                                    );
+
+                                    continue;
+                                }
+                            } else {
+                                existing.extend(new_values);
+                            }
+
                             if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
-                                if let Some(other_timestamps) = other.timestamps.get(&measure_type)
-                                {
-                                    ts_vec.extend(other_timestamps.clone());
+                                if let Some(other_ts) = other_timestamps.remove(&measure_type) {
+                                    ts_vec.extend(other_ts);
                                 }
                             }
                         }
                         (MeasurementData::Multi(existing), MeasurementData::Multi(new_values)) => {
                             existing.extend(new_values.clone());
                             if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
-                                if let Some(other_timestamps) = other.timestamps.get(&measure_type)
-                                {
-                                    ts_vec.extend(other_timestamps.clone());
+                                if let Some(other_ts) = other_timestamps.remove(&measure_type) {
+                                    ts_vec.extend(other_ts);
                                 }
                             }
                         }
-                        _ => {
-                            log::error!("Measurement type mismatch during update for '{measure_type}' - cannot change between Single and Multi variants");
+                        (MeasurementData::Single(existing), MeasurementData::Multi(new_values)) => {
+                            if let Some(first_vec) = new_values.first() {
+                                if existing.len() == first_vec.len() {
+                                    log::warn!(
+                                        "Attempting to append Multi data to Single for '{}' - converting to Multi (length {})",
+                                        measure_type,
+                                        existing.len()
+                                    );
+                                    existing_measurement.data.convert_to_multi();
+
+                                    if let MeasurementData::Multi(multi_data) =
+                                        &mut existing_measurement.data
+                                    {
+                                        multi_data.extend(new_values);
+                                    }
+
+                                    if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
+                                        if let Some(other_ts) =
+                                            other_timestamps.remove(&measure_type)
+                                        {
+                                            ts_vec.extend(other_ts);
+                                        }
+                                    }
+                                } else {
+                                    log::error!(
+                                        "Length mismatch for '{}': existing Single has length {}, incoming Multi vectors have length {}",
+                                        measure_type,
+                                        existing.len(),
+                                        first_vec.len()
+                                    );
+                                }
+                            } else {
+                                log::warn!("Received empty Multi data for '{}'", measure_type);
+                            }
+                        }
+                        (MeasurementData::Multi(existing), MeasurementData::Single(new_values)) => {
+                            // Incoming Single, existing Multi - check if it matches expected length
+                            if let Some(first_vec) = existing.first() {
+                                let expected_len = first_vec.len();
+
+                                if new_values.len() == expected_len {
+                                    log::info!(
+                                        "Appending Single array (length {}) as new Multi row for '{}'",
+                                        expected_len,
+                                        measure_type
+                                    );
+                                    existing.push(new_values);
+
+                                    if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
+                                        if let Some(other_ts) =
+                                            other_timestamps.remove(&measure_type)
+                                        {
+                                            ts_vec.extend(other_ts);
+                                        }
+                                    }
+                                } else {
+                                    log::error!(
+                                        "Length mismatch for '{}': Multi expects length {}, got Single with length {}",
+                                        measure_type,
+                                        expected_len,
+                                        new_values.len()
+                                    );
+                                }
+                            } else {
+                                // Empty Multi - shouldn't happen but handle gracefully
+                                log::warn!(
+                                    "Empty Multi for '{}' - appending Single array (length {}) as first row",
+                                    measure_type,
+                                    new_values.len()
+                                );
+                                existing.push(new_values);
+
+                                if let Some(ts_vec) = self.timestamps.get_mut(&measure_type) {
+                                    if let Some(other_ts) = other_timestamps.remove(&measure_type) {
+                                        ts_vec.extend(other_ts);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
                 Entry::Vacant(entry) => {
                     entry.insert(measurement);
-                    self.timestamps.insert(measure_type, timestamp.clone());
+
+                    let ts = other_timestamps
+                        .remove(&measure_type)
+                        .unwrap_or_else(|| vec![create_log_timestamp()]);
+                    self.timestamps.insert(measure_type, ts);
                 }
             }
         }
@@ -345,7 +413,6 @@ impl Device {
                             if data_points.len() > max_measurements {
                                 let downsampled = lttb(data_points, max_measurements);
 
-                                // Extract y values and x values (time offsets)
                                 let y_values: Vec<f64> =
                                     downsampled.iter().map(|dp| dp.y).collect();
                                 let x_values: Vec<f64> =
@@ -357,7 +424,6 @@ impl Device {
                                     x_values,
                                 );
                             } else {
-                                // Not enough points to downsample, use all data
                                 combined.insert(key.clone(), single_values.clone());
 
                                 let x_values: Vec<f64> = timestamps
@@ -561,7 +627,6 @@ impl ServerState {
             .filter_map(|(_, entity)| match entity {
                 Entity::Session(data_session) => Some(data_session),
                 Entity::Device(_) => None,
-                Entity::Results(_) => None,
             })
             .next()?;
 
@@ -581,9 +646,6 @@ impl ServerState {
                     entry.insert(Entity::Device(incoming_device));
                 }
             },
-            Entity::Results(incoming_results) => {
-                self.entities.insert(key, Entity::Results(incoming_results));
-            }
             Entity::Session(session_setup) => match self.entities.entry(key) {
                 Entry::Vacant(entry) => {
                     let mut data_session = DataSession::new(session_setup.info, self.uuid);
@@ -620,7 +682,6 @@ impl ServerState {
                     device_data.truncate();
                 }
                 Entity::Session(_) => {}
-                Entity::Results(_) => {}
             }
         }
     }
@@ -672,7 +733,6 @@ impl ServerState {
                     );
                 }
                 Entity::Session(_session) => {}
-                Entity::Results(_session) => {}
             }
         }
         log::info!("========================\n");
@@ -683,46 +743,6 @@ impl ServerState {
 
         for (key, entity) in &self.entities {
             match entity {
-                Entity::Results(result_info) => {
-                    if !root.contains_key("results") {
-                        root.insert("results".to_string(), Value::Table(Table::new()));
-                    }
-                    let results_table = root
-                        .get_mut("results")
-                        .and_then(|v| v.as_table_mut())
-                        .unwrap();
-                    let mut individual_result_table = Table::new();
-
-                    individual_result_table.insert(
-                        "result_description".to_string(),
-                        Value::String(result_info.result_description.clone()),
-                    );
-                    individual_result_table.insert(
-                        "result_status".to_string(),
-                        Value::Boolean(result_info.result_status),
-                    );
-                    if let Some(ub) = result_info.result_upper_bound {
-                        individual_result_table
-                            .insert("result_upper_bound".to_string(), Value::Float(ub));
-                    }
-                    if let Some(lb) = result_info.result_lower_bound {
-                        individual_result_table
-                            .insert("result_lower_bound".to_string(), Value::Float(lb));
-                    }
-                    if let Some(val) = result_info.result_value {
-                        individual_result_table
-                            .insert("result_value".to_string(), Value::Float(val));
-                    }
-
-                    for (config_key, config_value) in &result_info.result_meta {
-                        individual_result_table.insert(config_key.clone(), config_value.clone());
-                    }
-
-                    results_table.insert(
-                        result_info.result_name.clone(),
-                        Value::Table(individual_result_table),
-                    );
-                }
                 Entity::Session(session_setup) => {
                     if !root.contains_key("session") {
                         root.insert("session".to_string(), Value::Table(Table::new()));
@@ -921,27 +941,6 @@ impl ServerState {
         }
     }
 
-    pub fn results_ch(&self, id: Uuid) -> Option<ClickhouseResults> {
-        let result_data: ClickhouseResults = ClickhouseResults {
-            results: self
-                .entities
-                .values()
-                .filter_map(|entity| {
-                    if let Entity::Results(result) = entity {
-                        result.to_clickhouse(id)
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-        };
-        if result_data.results.is_empty() {
-            None
-        } else {
-            Some(result_data)
-        }
-    }
-
     pub fn validate(&self) -> io::Result<()> {
         log::trace!("Validating state, entities: {:?}", self.entities);
 
@@ -981,7 +980,6 @@ impl ServerState {
                     );
                 }
                 Entity::Session(_session) => {}
-                Entity::Results(_session) => {}
             }
         }
         stream_contents
@@ -1133,4 +1131,463 @@ fn validate_session_metadata(session: &SessionInfo, validations: &[String]) -> i
     }
 
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn create_test_device(name: &str) -> Device {
+        Device {
+            device_name: name.to_string(),
+            device_config: HashMap::new(),
+            measurements: HashMap::new(),
+            timestamps: HashMap::new(),
+        }
+    }
+
+    fn create_measurement(data: MeasurementData, unit: &str) -> Measurement {
+        Measurement {
+            data,
+            unit: unit.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_single_extend_single_values() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "temperature".to_string(),
+            create_measurement(MeasurementData::Single(vec![20.0]), "C"),
+        );
+        device.timestamps.insert(
+            "temperature".to_string(),
+            vec!["2024-01-01T00:00:00Z".to_string()],
+        );
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "temperature".to_string(),
+            create_measurement(MeasurementData::Single(vec![21.0]), "C"),
+        );
+        other.timestamps.insert(
+            "temperature".to_string(),
+            vec!["2024-01-01T00:01:00Z".to_string()],
+        );
+
+        device.update(other);
+
+        if let Some(measurement) = device.measurements.get("temperature") {
+            if let MeasurementData::Single(data) = &measurement.data {
+                assert_eq!(data, &vec![20.0, 21.0]);
+                assert_eq!(device.timestamps.get("temperature").unwrap().len(), 2);
+            } else {
+                panic!("Expected Single variant");
+            }
+        } else {
+            panic!("Temperature measurement not found");
+        }
+    }
+
+    #[test]
+    fn test_single_to_multi_conversion_same_length() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "acceleration".to_string(),
+            create_measurement(MeasurementData::Single(vec![1.0, 2.0, 3.0]), "m/s^2"),
+        );
+        device.timestamps.insert(
+            "acceleration".to_string(),
+            vec!["2024-01-01T00:00:00Z".to_string()],
+        );
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "acceleration".to_string(),
+            create_measurement(MeasurementData::Single(vec![4.0, 5.0, 6.0]), "m/s^2"),
+        );
+        other.timestamps.insert(
+            "acceleration".to_string(),
+            vec!["2024-01-01T00:01:00Z".to_string()],
+        );
+
+        device.update(other);
+
+        if let Some(measurement) = device.measurements.get("acceleration") {
+            if let MeasurementData::Multi(data) = &measurement.data {
+                assert_eq!(data.len(), 2);
+                assert_eq!(data[0], vec![1.0, 2.0, 3.0]);
+                assert_eq!(data[1], vec![4.0, 5.0, 6.0]);
+                assert_eq!(device.timestamps.get("acceleration").unwrap().len(), 2);
+            } else {
+                panic!("Expected Multi variant after conversion");
+            }
+        } else {
+            panic!("Acceleration measurement not found");
+        }
+    }
+
+    #[test]
+    fn test_single_different_lengths_error() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "data".to_string(),
+            create_measurement(MeasurementData::Single(vec![1.0, 2.0, 3.0]), "unit"),
+        );
+        device
+            .timestamps
+            .insert("data".to_string(), vec!["2024-01-01T00:00:00Z".to_string()]);
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "data".to_string(),
+            create_measurement(MeasurementData::Single(vec![4.0, 5.0]), "unit"),
+        );
+        other
+            .timestamps
+            .insert("data".to_string(), vec!["2024-01-01T00:01:00Z".to_string()]);
+
+        device.update(other);
+
+        // Should still be Single with only original data
+        if let Some(measurement) = device.measurements.get("data") {
+            if let MeasurementData::Single(data) = &measurement.data {
+                assert_eq!(data, &vec![1.0, 2.0, 3.0]);
+                assert_eq!(device.timestamps.get("data").unwrap().len(), 1);
+            } else {
+                panic!("Expected Single variant");
+            }
+        }
+    }
+
+    #[test]
+    fn test_multi_extend_multi() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "matrix".to_string(),
+            create_measurement(
+                MeasurementData::Multi(vec![vec![1.0, 2.0], vec![3.0, 4.0]]),
+                "unit",
+            ),
+        );
+        device.timestamps.insert(
+            "matrix".to_string(),
+            vec![
+                "2024-01-01T00:00:00Z".to_string(),
+                "2024-01-01T00:01:00Z".to_string(),
+            ],
+        );
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "matrix".to_string(),
+            create_measurement(
+                MeasurementData::Multi(vec![vec![5.0, 6.0], vec![7.0, 8.0]]),
+                "unit",
+            ),
+        );
+        other.timestamps.insert(
+            "matrix".to_string(),
+            vec![
+                "2024-01-01T00:02:00Z".to_string(),
+                "2024-01-01T00:03:00Z".to_string(),
+            ],
+        );
+
+        device.update(other);
+
+        if let Some(measurement) = device.measurements.get("matrix") {
+            if let MeasurementData::Multi(data) = &measurement.data {
+                assert_eq!(data.len(), 4);
+                assert_eq!(data[2], vec![5.0, 6.0]);
+                assert_eq!(data[3], vec![7.0, 8.0]);
+                assert_eq!(device.timestamps.get("matrix").unwrap().len(), 4);
+            } else {
+                panic!("Expected Multi variant");
+            }
+        }
+    }
+
+    #[test]
+    fn test_multi_append_single_matching_length() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "sensors".to_string(),
+            create_measurement(
+                MeasurementData::Multi(vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]),
+                "unit",
+            ),
+        );
+        device.timestamps.insert(
+            "sensors".to_string(),
+            vec![
+                "2024-01-01T00:00:00Z".to_string(),
+                "2024-01-01T00:01:00Z".to_string(),
+            ],
+        );
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "sensors".to_string(),
+            create_measurement(MeasurementData::Single(vec![7.0, 8.0, 9.0]), "unit"),
+        );
+        other.timestamps.insert(
+            "sensors".to_string(),
+            vec!["2024-01-01T00:02:00Z".to_string()],
+        );
+
+        device.update(other);
+
+        if let Some(measurement) = device.measurements.get("sensors") {
+            if let MeasurementData::Multi(data) = &measurement.data {
+                assert_eq!(data.len(), 3);
+                assert_eq!(data[2], vec![7.0, 8.0, 9.0]);
+                assert_eq!(device.timestamps.get("sensors").unwrap().len(), 3);
+            } else {
+                panic!("Expected Multi variant");
+            }
+        }
+    }
+
+    #[test]
+    fn test_multi_append_single_wrong_length() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "sensors".to_string(),
+            create_measurement(
+                MeasurementData::Multi(vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]),
+                "unit",
+            ),
+        );
+        device.timestamps.insert(
+            "sensors".to_string(),
+            vec![
+                "2024-01-01T00:00:00Z".to_string(),
+                "2024-01-01T00:01:00Z".to_string(),
+            ],
+        );
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "sensors".to_string(),
+            create_measurement(MeasurementData::Single(vec![7.0, 8.0]), "unit"),
+        );
+        other.timestamps.insert(
+            "sensors".to_string(),
+            vec!["2024-01-01T00:02:00Z".to_string()],
+        );
+
+        device.update(other);
+
+        // Should remain unchanged
+        if let Some(measurement) = device.measurements.get("sensors") {
+            if let MeasurementData::Multi(data) = &measurement.data {
+                assert_eq!(data.len(), 2);
+                assert_eq!(device.timestamps.get("sensors").unwrap().len(), 2);
+            } else {
+                panic!("Expected Multi variant");
+            }
+        }
+    }
+
+    #[test]
+    fn test_single_to_multi_conversion_from_incoming_multi() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "data".to_string(),
+            create_measurement(MeasurementData::Single(vec![1.0, 2.0, 3.0]), "unit"),
+        );
+        device
+            .timestamps
+            .insert("data".to_string(), vec!["2024-01-01T00:00:00Z".to_string()]);
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "data".to_string(),
+            create_measurement(
+                MeasurementData::Multi(vec![vec![4.0, 5.0, 6.0], vec![7.0, 8.0, 9.0]]),
+                "unit",
+            ),
+        );
+        other.timestamps.insert(
+            "data".to_string(),
+            vec![
+                "2024-01-01T00:01:00Z".to_string(),
+                "2024-01-01T00:02:00Z".to_string(),
+            ],
+        );
+
+        device.update(other);
+
+        if let Some(measurement) = device.measurements.get("data") {
+            if let MeasurementData::Multi(data) = &measurement.data {
+                assert_eq!(data.len(), 3);
+                assert_eq!(data[0], vec![1.0, 2.0, 3.0]);
+                assert_eq!(data[1], vec![4.0, 5.0, 6.0]);
+                assert_eq!(data[2], vec![7.0, 8.0, 9.0]);
+                assert_eq!(device.timestamps.get("data").unwrap().len(), 3);
+            } else {
+                panic!("Expected Multi variant after conversion");
+            }
+        }
+    }
+
+    #[test]
+    fn test_unit_mismatch_error() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "temperature".to_string(),
+            create_measurement(MeasurementData::Single(vec![20.0]), "C"),
+        );
+        device.timestamps.insert(
+            "temperature".to_string(),
+            vec!["2024-01-01T00:00:00Z".to_string()],
+        );
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "temperature".to_string(),
+            create_measurement(MeasurementData::Single(vec![68.0]), "F"),
+        );
+        other.timestamps.insert(
+            "temperature".to_string(),
+            vec!["2024-01-01T00:01:00Z".to_string()],
+        );
+
+        device.update(other);
+
+        // Should remain unchanged due to unit mismatch
+        if let Some(measurement) = device.measurements.get("temperature") {
+            if let MeasurementData::Single(data) = &measurement.data {
+                assert_eq!(data, &vec![20.0]);
+                assert_eq!(device.timestamps.get("temperature").unwrap().len(), 1);
+            } else {
+                panic!("Expected Single variant");
+            }
+        }
+    }
+
+    #[test]
+    fn test_new_measurement_type() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "temperature".to_string(),
+            create_measurement(MeasurementData::Single(vec![20.0]), "C"),
+        );
+        device.timestamps.insert(
+            "temperature".to_string(),
+            vec!["2024-01-01T00:00:00Z".to_string()],
+        );
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "humidity".to_string(),
+            create_measurement(MeasurementData::Single(vec![60.0]), "%"),
+        );
+        other.timestamps.insert(
+            "humidity".to_string(),
+            vec!["2024-01-01T00:01:00Z".to_string()],
+        );
+
+        device.update(other);
+
+        assert_eq!(device.measurements.len(), 2);
+        assert!(device.measurements.contains_key("temperature"));
+        assert!(device.measurements.contains_key("humidity"));
+        assert!(device.timestamps.contains_key("humidity"));
+    }
+
+    #[test]
+    fn test_new_measurement_without_timestamp() {
+        let mut device = create_test_device("test");
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "pressure".to_string(),
+            create_measurement(MeasurementData::Single(vec![1013.25]), "hPa"),
+        );
+        // Intentionally not adding timestamp
+
+        device.update(other);
+
+        assert!(device.measurements.contains_key("pressure"));
+        assert!(device.timestamps.contains_key("pressure"));
+        assert_eq!(device.timestamps.get("pressure").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_empty_multi_append_single() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "data".to_string(),
+            create_measurement(MeasurementData::Multi(vec![]), "unit"),
+        );
+        device.timestamps.insert("data".to_string(), vec![]);
+
+        let mut other = create_test_device("test");
+        other.measurements.insert(
+            "data".to_string(),
+            create_measurement(MeasurementData::Single(vec![1.0, 2.0, 3.0]), "unit"),
+        );
+        other
+            .timestamps
+            .insert("data".to_string(), vec!["2024-01-01T00:00:00Z".to_string()]);
+
+        device.update(other);
+
+        if let Some(measurement) = device.measurements.get("data") {
+            if let MeasurementData::Multi(data) = &measurement.data {
+                assert_eq!(data.len(), 1);
+                assert_eq!(data[0], vec![1.0, 2.0, 3.0]);
+            } else {
+                panic!("Expected Multi variant");
+            }
+        }
+    }
+
+    #[test]
+    fn test_sequential_updates_forming_multi() {
+        let mut device = create_test_device("test");
+        device.measurements.insert(
+            "xyz".to_string(),
+            create_measurement(MeasurementData::Single(vec![1.0, 2.0, 3.0]), "m"),
+        );
+        device
+            .timestamps
+            .insert("xyz".to_string(), vec!["2024-01-01T00:00:00Z".to_string()]);
+
+        // Second update with same length - should convert to Multi
+        let mut other1 = create_test_device("test");
+        other1.measurements.insert(
+            "xyz".to_string(),
+            create_measurement(MeasurementData::Single(vec![4.0, 5.0, 6.0]), "m"),
+        );
+        other1
+            .timestamps
+            .insert("xyz".to_string(), vec!["2024-01-01T00:01:00Z".to_string()]);
+        device.update(other1);
+
+        // Third update - should append to Multi
+        let mut other2 = create_test_device("test");
+        other2.measurements.insert(
+            "xyz".to_string(),
+            create_measurement(MeasurementData::Single(vec![7.0, 8.0, 9.0]), "m"),
+        );
+        other2
+            .timestamps
+            .insert("xyz".to_string(), vec!["2024-01-01T00:02:00Z".to_string()]);
+        device.update(other2);
+
+        if let Some(measurement) = device.measurements.get("xyz") {
+            if let MeasurementData::Multi(data) = &measurement.data {
+                assert_eq!(data.len(), 3);
+                assert_eq!(data[0], vec![1.0, 2.0, 3.0]);
+                assert_eq!(data[1], vec![4.0, 5.0, 6.0]);
+                assert_eq!(data[2], vec![7.0, 8.0, 9.0]);
+                assert_eq!(device.timestamps.get("xyz").unwrap().len(), 3);
+            } else {
+                panic!("Expected Multi variant");
+            }
+        }
+    }
 }
