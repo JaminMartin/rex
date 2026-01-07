@@ -1,6 +1,5 @@
 use crate::data_handler::{
     create_log_timestamp, sanitize_filename, DataSession, Device, Entity, Listner, ServerState,
-    SessionResults,
 };
 use crate::db::ClickhouseServer;
 use clickhouse::Client;
@@ -184,15 +183,6 @@ async fn handle_entity(
         return true;
     }
 
-    if let Ok(result_session) = serde_json::from_str::<SessionResults>(message) {
-        log::info!("Session results processed");
-        let result_name = result_session.result_name.clone();
-        let mut state = state.lock().await;
-        state.update_entity(result_name, Entity::Results(result_session));
-        let _ = writer.write_all(b"Session results processed\n").await;
-        return true;
-    }
-
     false
 }
 
@@ -337,27 +327,9 @@ pub async fn send_to_clickhouse(
             insert_conf.write(&conf).await?;
         }
 
-        let mut insert_res_opt = None;
-        if let Some(res) = state.results_ch(state.uuid) {
-            if !res.results.is_empty() {
-                let mut insert_res = client.insert(&config.results_table)?;
-                for result in res.results {
-                    insert_res.write(&result).await?;
-                }
-                insert_res_opt = Some(insert_res);
-            } else {
-                log::info!("No results to insert (empty results)");
-            }
-        } else {
-            log::info!("No results to insert (no results data)");
-        }
-
         insert_session.end().await?;
         insert_measure.end().await?;
         insert_conf.end().await?;
-        if let Some(insert_res) = insert_res_opt {
-            insert_res.end().await?;
-        }
 
         log::info!("Completed Clickhouse logging!");
         Ok(())

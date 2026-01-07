@@ -57,20 +57,3 @@ pub struct ClickhouseDevicePrimative {
 pub struct ClickhouseDevices {
     pub devices: Vec<ClickhouseDevicePrimative>,
 }
-
-#[derive(Debug, Row, Clone, Serialize, Deserialize)]
-pub struct ClickhouseResultsPrimative {
-    #[serde(with = "clickhouse::serde::uuid")]
-    pub session_id: Uuid,
-    pub result_type: String,
-    pub result_info: String,
-    pub result_status: bool,
-    pub upper_bound: f64,
-    pub lower_bound: f64,
-    pub measured_value: f64,
-    pub result_meta: String,
-}
-#[derive(Debug, Row, Clone, Serialize, Deserialize)]
-pub struct ClickhouseResults {
-    pub results: Vec<ClickhouseResultsPrimative>,
-}
