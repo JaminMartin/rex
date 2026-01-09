@@ -1,2 +1,8 @@
-pub mod tui_mod;
-pub use tui_mod::*;
+pub mod app;
+pub mod keybindings;
+pub mod tabs;
+pub mod ui;
+pub mod widgets;
+
+pub use app::App;
+pub use ui::run_tui;
