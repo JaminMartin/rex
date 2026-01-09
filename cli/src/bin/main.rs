@@ -19,7 +19,7 @@ async fn main() {
         Commands::Run(args) => {
             let log_level = get_log_level(cli.verbosity);
             init_logger(log_level, args.interactive);
-            // Create a broadcast channel for shutdown signals
+
             let (shutdown_tx, _) = broadcast::channel(1);
             let shutting_down = Arc::new(AtomicBool::new(false));
             let shutting_down_clone = shutting_down.clone();
@@ -48,7 +48,7 @@ async fn main() {
         Commands::Serve(args) => {
             let log_level = get_log_level(cli.verbosity);
             init_logger(log_level, false);
-            // Create a broadcast channel for shutdown signals
+
             let (shutdown_tx, _) = broadcast::channel(1);
             let shutting_down = Arc::new(AtomicBool::new(false));
             let shutting_down_clone = shutting_down.clone();

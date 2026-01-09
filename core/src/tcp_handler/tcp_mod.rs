@@ -1,3 +1,4 @@
+use crate::data_handler::transport::Transport;
 use crate::data_handler::{
     create_log_timestamp, sanitize_filename, DataSession, Device, Entity, Listner, ServerState,
 };
@@ -333,5 +334,63 @@ pub async fn send_to_clickhouse(
 
         log::info!("Completed Clickhouse logging!");
         Ok(())
+    }
+}
+
+use std::io::{BufRead, Write};
+use std::net::TcpStream as SyncTcpStream;
+#[derive(Debug)]
+pub struct TCPTransport {
+    addr: String,
+    stream: Option<SyncTcpStream>,
+}
+
+impl TCPTransport {
+    pub fn new(addr: &str) -> Self {
+        TCPTransport {
+            addr: addr.to_string(),
+            stream: None,
+        }
+    }
+}
+
+impl Transport for TCPTransport {
+    fn send_command(&mut self, command: &str) -> Result<String, Box<dyn std::error::Error>> {
+        self.ensure_connection()?;
+
+        let stream = self.stream.as_mut().unwrap();
+
+        if let Err(e) = stream
+            .write_all(command.as_bytes())
+            .and_then(|_| stream.flush())
+        {
+            self.stream = None;
+            return Err(e.into());
+        }
+
+        let mut reader = std::io::BufReader::new(stream.try_clone()?);
+        let mut response = String::new();
+
+        match reader.read_line(&mut response) {
+            Ok(0) => {
+                self.stream = None;
+                Err("Server closed connection".into())
+            }
+            Ok(_) => Ok(response.trim().to_string()),
+            Err(e) => {
+                self.stream = None;
+                Err(e.into())
+            }
+        }
+    }
+    fn ensure_connection(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.stream.is_none() {
+            let stream = SyncTcpStream::connect(&self.addr)?;
+            self.stream = Some(stream);
+        }
+        Ok(())
+    }
+    fn is_connected(&self) -> bool {
+        self.stream.is_some()
     }
 }

@@ -1,7 +1,11 @@
+use crate::data_handler::transport::TransportImpl;
 use crate::data_handler::{
     create_time_stamp, get_configuration, DataSession, ServerState, SessionInfo,
 };
 use crate::mail_handler::mailer;
+use crate::server::http_transport::HTTPTransport;
+//use crate::server::websocket_transport::WebSocketTransport;
+use crate::tcp_handler::TCPTransport;
 use crate::tcp_handler::{save_state, send_to_clickhouse, server_status, start_tcp_server};
 use crate::tui_tool::run_tui;
 
@@ -168,6 +172,11 @@ const fn default_loops() -> u8 {
 const fn default_interactive() -> bool {
     false
 }
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum NetworkBackend {
+    Http,
+    Tcp,
+}
 /// A commandline DAQ viewer
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -176,6 +185,9 @@ pub struct StandaloneArgs {
     // otherwise, please use the devices IP , device_ip:7676
     #[arg(short, long)]
     address: String,
+    /// Network backend, either http or tcp (default tcp)
+    #[arg(short, long)]
+    backend: NetworkBackend,
     /// desired log level, info displays summary of connected instruments & recent data. debug will include all data, including standard output from Python.
     #[arg(short, long, default_value_t = 2)]
     verbosity: u8,
@@ -224,11 +236,13 @@ pub fn run_session(
         for _ in 0..args.loops {
             let interpreter_path_clone = Arc::clone(&interpreter_path);
             let script_path_clone = Arc::clone(&script_path);
+            let script_path_str = script_path_clone.as_ref().to_string_lossy().into_owned();
             log::info!("Server is starting...");
 
             let state = Arc::new(Mutex::new(ServerState::new(
                 uuid,
                 additional_metadata.clone(),
+                script_path_str,
             )));
 
             let shutdown_rx_tcp = shutdown_tx.subscribe();
@@ -298,7 +312,9 @@ pub fn run_session(
                     };
                     let remote = false;
                     let addr = format!("0.0.0.0:{port_tui}");
-                    match rt.block_on(run_tui(&addr, remote)) {
+                    let transport = TCPTransport::new(&addr);
+
+                    match rt.block_on(run_tui(transport, remote)) {
                         Ok(_) => log::info!("TUI closed successfully"),
                         Err(e) => log::error!("TUI encountered an error: {e}"),
                     }
@@ -643,7 +659,11 @@ pub fn cli_standalone(args: StandaloneArgs, log_level: LevelFilter) {
             }
         };
         let remote = true;
-        match rt.block_on(run_tui(&args.address, remote)) {
+        let transport = match args.backend {
+            NetworkBackend::Http => TransportImpl::Http(HTTPTransport::new(&args.address)),
+            NetworkBackend::Tcp => TransportImpl::Tcp(TCPTransport::new(&args.address)),
+        };
+        match rt.block_on(run_tui(transport, remote)) {
             Ok(_) => log::info!("TUI closed successfully"),
             Err(e) => log::error!("TUI encountered an error: {e}"),
         }

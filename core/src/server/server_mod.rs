@@ -3,20 +3,26 @@ use crate::cli_tool::{RunArgs, ServeArgs};
 use crate::data_handler::get_configuration;
 
 use axum::{
-    extract::State,
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 
+use futures_util::{SinkExt, StreamExt};
 use log::LevelFilter;
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
 use tokio::net::TcpStream;
+
 use tokio::signal::ctrl_c;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -108,7 +114,97 @@ struct AppState {
     running: Arc<AtomicBool>,
     tcp_addr: Arc<tokio::sync::Mutex<String>>,
 }
+async fn websocket_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_websocket(socket, state))
+}
+async fn handle_websocket(socket: WebSocket, state: AppState) {
+    let (mut ws_sender, mut ws_receiver) = socket.split();
 
+    log::info!("WebSocket client connected");
+
+    // Handle incoming messages from client
+    while let Some(msg) = ws_receiver.next().await {
+        match msg {
+            Ok(Message::Text(text)) => {
+                log::debug!("Received WebSocket command: {}", text);
+
+                match process_websocket_command(&state, &text).await {
+                    Ok(response) => {
+                        if let Err(e) = ws_sender.send(Message::Text(response.into())).await {
+                            log::error!("Failed to send WebSocket response: {}", e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Command processing error: {}", e);
+                        let error_msg = format!("ERROR: {}", e);
+                        if let Err(e) = ws_sender.send(Message::Text(error_msg.into())).await {
+                            log::error!("Failed to send error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(Message::Close(_)) => {
+                log::info!("WebSocket client disconnected");
+                break;
+            }
+            Ok(Message::Ping(data)) => {
+                if let Err(e) = ws_sender.send(Message::Pong(data)).await {
+                    log::error!("Failed to send pong: {}", e);
+                    break;
+                }
+            }
+            Err(e) => {
+                log::error!("WebSocket error: {}", e);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    log::info!("WebSocket connection closed");
+}
+
+async fn process_websocket_command(state: &AppState, command: &str) -> Result<String, String> {
+    let tcp_command = match command.trim() {
+        "GET_DATASTREAM" => "GET_DATASTREAM\n",
+        "STATE" => "STATE\n",
+        "KILL" => "KILL\n",
+        "PAUSE_STATE" => "PAUSE_STATE\n",
+        "RESUME_STATE" => "RESUME_STATE\n",
+        other => return Err(format!("Unknown command: {}", other)),
+    };
+
+    // Connect to TCP backend and forward command
+    let addr = {
+        let tcp_addr = state.tcp_addr.lock().await;
+        tcp_addr.clone()
+    };
+
+    let stream = TcpStream::connect(&addr)
+        .await
+        .map_err(|e| format!("Failed to connect to TCP backend at {}: {}", addr, e))?;
+
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    writer
+        .write_all(tcp_command.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write: {}", e))?;
+
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .await
+        .map_err(|e| format!("Failed to read: {}", e))?;
+
+    Ok(response.trim().to_string())
+}
 async fn run_handler(
     State(state): State<AppState>,
 
@@ -182,6 +278,7 @@ pub async fn run_server(
         .route("/kill", post(kill))
         .route("/pause", post(pause))
         .route("/continue", post(resume))
+        .route("/ws", get(websocket_handler))
         .with_state(state);
 
     log::info!("Rex Server listening on http://0.0.0.0:{}", args.address);
