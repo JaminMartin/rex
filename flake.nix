@@ -28,26 +28,29 @@
         };
         # Platform-specific packages
         linuxPackages = pkgs.lib.optionals pkgs.stdenv.isLinux [
+          pkgs.gcc
           pkgs.systemd
-          pkgs.chromium # for when python needs plotly saving support
+          pkgs.chromium
         ];
         darwinPackages = pkgs.lib.optionals pkgs.stdenv.isDarwin [
-          # Add macOS-specific packages here if needed
+          pkgs.llvmPackages.clang
         ];
       in
       {
         devShells.default = pkgs.mkShell {
           packages = [
             rust
-            pkgs.gcc
             pkgs.pkg-config
             pkgs.openssl
             pkgs.python313
             pkgs.uv
             pkgs.maturin
-            pkgs.zlib # numpy
-            pkgs.stdenv.cc.cc.lib # numpy
-          ] ++ linuxPackages ++ darwinPackages;
+            pkgs.zlib
+            pkgs.stdenv.cc.cc.lib
+          ]
+          ++ linuxPackages
+          ++ darwinPackages;
+
           shellHook = ''
             export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${pkgs.zlib}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.openssl}/lib
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
