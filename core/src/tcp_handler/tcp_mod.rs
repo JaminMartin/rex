@@ -1,4 +1,4 @@
-use crate::data_handler::transport::Transport;
+use crate::data_handler::transport::{Transport, TransportType};
 use crate::data_handler::{
     create_log_timestamp, sanitize_filename, DataSession, Device, Entity, Listner, ServerState,
 };
@@ -392,5 +392,9 @@ impl Transport for TCPTransport {
     }
     fn is_connected(&self) -> bool {
         self.stream.is_some()
+    }
+
+    fn transport_type(&self) -> TransportType {
+        TransportType::Tcp
     }
 }

@@ -1,16 +1,24 @@
 use crate::data_handler::{SessionInfo, SessionMetadata, Summary};
 use crate::tui_tool::widgets::file_picker::FilePicker;
+use log::LevelFilter;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread::JoinHandle;
+use std::time::Duration;
+use tokio::sync::broadcast;
 use toml::Value;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FocusSection {
@@ -24,36 +32,31 @@ pub enum StateMode {
     PickingScript,
 }
 pub struct StateTab {
-    // Data
     pub session_info: Option<SessionInfo>,
     pub device_configs: HashMap<String, HashMap<String, Value>>,
-
-    // UI State
     pub focus: FocusSection,
     pub session_fields_state: ListState,
     pub device_list_state: ListState,
     pub device_fields_state: ListState,
-
-    // Cached lists for navigation
     session_field_names: Vec<String>,
     session_field_values: Vec<String>,
     device_names: Vec<String>,
     device_field_names: Vec<String>,
     device_field_values: Vec<String>,
-
-    // Edit state
     pub editing: bool,
     pub edit_buffer: String,
     pub cursor_position: usize,
     pub editing_field_name: String,
     pub editing_is_session: bool,
-
     pub mode: StateMode,
     pub file_picker: Option<FilePicker>,
     pub loaded_config_path: Option<PathBuf>,
     pub loaded_script_path: Option<PathBuf>,
     pub server_script_path: Option<String>,
     pub remote: bool,
+    pub rerun_handle: Option<JoinHandle<()>>,
+    pub rerun_shutdown_tx: Option<broadcast::Sender<()>>,
+    pub rerun_shutting_down: Option<Arc<AtomicBool>>,
 }
 
 impl StateTab {
@@ -90,8 +93,12 @@ impl StateTab {
             loaded_script_path: None,
             server_script_path: None,
             remote: remote,
+            rerun_handle: None,
+            rerun_shutdown_tx: None,
+            rerun_shutting_down: None,
         }
     }
+
     pub fn start_config_picker(&mut self) {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         self.file_picker = Some(FilePicker::new(
@@ -191,7 +198,6 @@ impl StateTab {
         let contents = std::fs::read_to_string(path)?;
         let config: toml::Value = toml::from_str(&contents)?;
 
-        // Parse session info from session.info
         if let Some(session_table) = config.get("session").and_then(|v| v.as_table()) {
             if let Some(info_table) = session_table.get("info").and_then(|v| v.as_table()) {
                 let mut session_info = SessionInfo {
@@ -222,7 +228,6 @@ impl StateTab {
                     meta: None,
                 };
 
-                // Parse metadata if exists
                 if let Some(meta_table) = info_table.get("meta").and_then(|v| v.as_table()) {
                     let mut meta_map = HashMap::new();
                     for (key, value) in meta_table {
@@ -236,7 +241,6 @@ impl StateTab {
             }
         }
 
-        // Parse device configs from device.*
         let mut device_configs = HashMap::new();
         if let Some(device_table) = config.get("device").and_then(|v| v.as_table()) {
             for (device_name, device_value) in device_table {
@@ -255,6 +259,7 @@ impl StateTab {
         log::info!("Successfully loaded config from {:?}", path);
         Ok(())
     }
+
     pub fn update_from_json(&mut self, json: &str) -> Result<(), Box<dyn std::error::Error>> {
         let summary: Summary = serde_json::from_str(json)?;
         self.session_info = Some(summary.entities.info);
@@ -294,7 +299,6 @@ impl StateTab {
                 info.session_description.clone(),
             ];
 
-            // Add metadata fields
             if let Some(ref meta) = info.meta {
                 for (key, value) in &meta.meta {
                     self.session_field_names.push(format!("meta.{}", key));
@@ -341,7 +345,6 @@ impl StateTab {
         self.device_fields_state.select(None);
     }
 
-    // Navigation - matches Chart tab pattern
     pub fn next_primary(&mut self) {
         match self.focus {
             FocusSection::Session => {
@@ -493,7 +496,6 @@ impl StateTab {
                         2 => info.session_name = self.edit_buffer.clone(),
                         3 => info.session_description = self.edit_buffer.clone(),
                         _ => {
-                            // Handle metadata fields (index >= 4)
                             let field_name = &self.session_field_names[idx];
                             if let Some(meta_key) = field_name.strip_prefix("meta.") {
                                 if info.meta.is_none() {
@@ -547,7 +549,6 @@ impl StateTab {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, show_popup: bool) {
-        // Render normal state view
         let vertical_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -774,7 +775,6 @@ impl StateTab {
 
     pub fn rerun(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let temp_config = self.save_config_to_temp_file()?;
-
         let script_path = self.get_script_path().ok_or("No script file available")?;
 
         let output_dir = self
@@ -789,28 +789,97 @@ impl StateTab {
         log::info!("  Script: {:?}", script_path);
         log::info!("  Output: {:?}", output_dir);
 
-        let mut cmd = std::process::Command::new("rex");
-        cmd.arg("run")
-            .arg("-p")
-            .arg(&script_path)
-            .arg("-c")
-            .arg(&temp_config)
-            .arg("-o")
-            .arg(&output_dir)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+        let new_args = crate::cli_tool::RunArgs {
+            path: script_path.clone(),
+            config: Some(temp_config.clone().to_string_lossy().to_string()),
+            output: output_dir.to_string_lossy().to_string(),
+            dry_run: false,
+            email: None,
+            delay: 0,
+            loops: 1,
+            interactive: false,
+            port: None,
+            meta_json: None,
+        };
 
-        match cmd.spawn() {
-            Ok(_) => {
-                log::info!("✓ Successfully started new rex run");
-                Ok(())
+        // Create shutdown infrastructure for the new session
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let uuid = Uuid::new_v4();
+
+        // Clone for the thread
+        let shutdown_tx_clone = shutdown_tx.clone();
+        let shutting_down_clone = shutting_down.clone();
+
+        // Spawn ctrl-c handler for this session
+        let shutdown_tx_ctrlc = shutdown_tx.clone();
+        let shutting_down_ctrlc = shutting_down.clone();
+
+        tokio::spawn(async move {
+            if let Ok(()) = tokio::signal::ctrl_c().await {
+                if !shutting_down_ctrlc.load(Ordering::SeqCst) {
+                    log::info!("Ctrl-C received in rerun session, initiating shutdown...");
+                    shutting_down_ctrlc.store(true, Ordering::SeqCst);
+                    let _ = shutdown_tx_ctrlc.send(());
+                }
             }
-            Err(e) => {
-                log::error!("Failed to spawn rex run: {}", e);
-                Err(e.into())
+        });
+
+        // Spawn the session thread
+        let handle = std::thread::spawn(move || {
+            log::info!("Rerun session thread started");
+            crate::cli_tool::run_session(new_args, shutdown_tx_clone, LevelFilter::Info, uuid);
+            log::info!("Rerun session thread completed");
+        });
+
+        // Store the handle and shutdown mechanism
+        self.rerun_handle = Some(handle);
+        self.rerun_shutdown_tx = Some(shutdown_tx);
+        self.rerun_shutting_down = Some(shutting_down);
+
+        log::info!("✓ New session spawned successfully!");
+        Ok(())
+    }
+    pub fn cleanup_rerun(&mut self) {
+        if let Some(ref handle) = self.rerun_handle {
+            if !handle.is_finished() {
+                log::info!("TUI exiting, shutting down active rerun session gracefully...");
+
+                // Signal shutdown
+                if let Some(ref shutting_down) = self.rerun_shutting_down {
+                    shutting_down.store(true, Ordering::SeqCst);
+                }
+
+                if let Some(ref tx) = self.rerun_shutdown_tx {
+                    let _ = tx.send(());
+                }
+
+                // Wait for graceful shutdown with timeout
+                if let Some(handle) = self.rerun_handle.take() {
+                    let start = std::time::Instant::now();
+                    let timeout = Duration::from_secs(30); // Adjust as needed
+
+                    // Poll until thread finishes or timeout
+                    while !handle.is_finished() && start.elapsed() < timeout {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+
+                    if handle.is_finished() {
+                        let _ = handle.join();
+                        log::info!("Rerun session shutdown completed successfully");
+                    } else {
+                        log::warn!(
+                            "Rerun session did not complete within timeout, detaching thread"
+                        );
+                        // Thread will continue but we're moving on
+                    }
+                }
             }
         }
+
+        // Clean up
+        self.rerun_shutdown_tx = None;
+        self.rerun_shutting_down = None;
     }
     fn render_edit_popup(&self, f: &mut Frame, area: Rect) {
         let popup_area = centered_rect(60, 20, area);

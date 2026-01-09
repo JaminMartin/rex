@@ -125,25 +125,25 @@ pub enum Commands {
 pub struct RunArgs {
     /// Email address to receive results
     #[arg(short, long)]
-    email: Option<String>,
+    pub email: Option<String>,
     /// Time delay in minutes before starting the session
     #[arg(short, long, default_value_t = 0)]
     #[serde(default = "default_delay")]
-    delay: u64,
+    pub delay: u64,
     /// Number of times to loop the session
     #[arg(short, long, default_value_t = 1)]
     #[serde(default = "default_loops")]
-    loops: u8,
+    pub loops: u8,
     /// Path to script containing the session setup / control flow
     #[arg(short, long)]
-    path: PathBuf,
+    pub path: PathBuf,
     /// Dry run, will not log data. Can be used for long term monitoring
     #[arg(short = 'n', long, default_value_t = false)]
     #[serde(default = "default_dry_run")]
-    dry_run: bool,
+    pub dry_run: bool,
     /// Target directory for output path
     #[arg(short, long, default_value_t = get_current_dir())]
-    output: String,
+    pub output: String,
     /// Enable interactive TUI mode
     #[arg(short, long)]
     #[serde(default = "default_interactive")]
@@ -153,7 +153,7 @@ pub struct RunArgs {
     pub port: Option<String>,
     /// Optional path to config file used by DAQ script (python, matlab etc). Useful when it is critical the script goes unmodified.,
     #[arg(short, long)]
-    config: Option<String>,
+    pub config: Option<String>,
     // Additional metadata that will be stored as part of the run
     #[arg(long, value_name = "JSON")]
     pub meta_json: Option<String>,

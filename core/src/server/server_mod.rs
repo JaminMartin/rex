@@ -125,7 +125,6 @@ async fn handle_websocket(socket: WebSocket, state: AppState) {
 
     log::info!("WebSocket client connected");
 
-    // Handle incoming messages from client
     while let Some(msg) = ws_receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => {
@@ -178,8 +177,6 @@ async fn process_websocket_command(state: &AppState, command: &str) -> Result<St
         "RESUME_STATE" => "RESUME_STATE\n",
         other => return Err(format!("Unknown command: {}", other)),
     };
-
-    // Connect to TCP backend and forward command
     let addr = {
         let tcp_addr = state.tcp_addr.lock().await;
         tcp_addr.clone()

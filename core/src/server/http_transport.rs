@@ -1,4 +1,4 @@
-use crate::data_handler::transport::Transport;
+use crate::data_handler::transport::{Transport, TransportType};
 use reqwest::blocking::Client;
 use std::time::Duration;
 
@@ -64,7 +64,9 @@ impl Transport for HTTPTransport {
         let body = response.text()?;
         Ok(body)
     }
-
+    fn transport_type(&self) -> TransportType {
+        TransportType::Http
+    }
     fn ensure_connection(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!("{}/", self.base_url);
         let response = self

@@ -1,10 +1,9 @@
-use crate::data_handler::transport::Transport;
-use crate::tui_tool::app::{App, TabView};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::data_handler::transport::{Transport, TransportType};
 
+use crate::tui_tool::app::{App, TabView};
+use crossterm::event::{KeyCode, KeyEvent};
 pub fn handle_key_event<T: Transport>(app: &mut App<T>, event: KeyEvent, remote: bool) -> bool {
     let key = event.code;
-    let modifiers = event.modifiers;
 
     match app.active_tab {
         TabView::State => {
@@ -40,8 +39,11 @@ pub fn handle_key_event<T: Transport>(app: &mut App<T>, event: KeyEvent, remote:
     match key {
         KeyCode::Char('q') => {
             if remote {
+                app.state_tab.cleanup_rerun();
+
                 return true;
             } else {
+                app.state_tab.cleanup_rerun();
                 app.kill_server();
                 return true;
             }
@@ -76,57 +78,7 @@ fn handle_chart_keys<T: Transport>(app: &mut App<T>, key: KeyCode) {
         }
         KeyCode::Char('p') => app.pause_server(),
         KeyCode::Char('r') => app.resume_server(),
-        KeyCode::Char('n') => {
-            if app.state_tab.remote {
-                if app.state_tab.server_script_path.is_none() {
-                    log::warn!("Cannot start new run: No script available from server.");
-                    log::info!("The server must have a running script for remote rerun.");
-                } else if !app.state_tab.can_rerun() {
-                    log::warn!("Cannot start new run: No config available.");
-                    log::info!("Wait for the server to provide config data, or connect locally to load files.");
-                } else if app.connection_status {
-                    log::warn!("Server is still running. Press 'k' to kill it first, then 'n' to start new run.");
-                } else {
-                    log::info!("Starting remote rerun with server's script...");
-                    match app.state_tab.rerun() {
-                        Ok(()) => {
-                            log::info!("✓ New session started successfully!");
-                            log::info!(
-                                "→ The server will execute: {}",
-                                app.state_tab.server_script_path.as_ref().unwrap()
-                            );
-                        }
-                        Err(e) => {
-                            log::error!("Failed to start new session: {}", e);
-                        }
-                    }
-                }
-            } else {
-                if !app.state_tab.can_rerun() {
-                    log::warn!(
-                        "Cannot start new run: No config loaded. Press 'l' to load files first."
-                    );
-                } else if app.connection_status {
-                    log::warn!("Server is still running. Press 'k' to kill it first, then 'n' to start new run.");
-                } else {
-                    if app.state_tab.loaded_script_path.is_none()
-                        && app.state_tab.server_script_path.is_none()
-                    {
-                        log::warn!("No script file specified. Press 'l' to select one.");
-                    } else {
-                        log::info!("Starting new run...");
-                        match app.state_tab.rerun() {
-                            Ok(()) => {
-                                log::info!("✓ New session started successfully!");
-                            }
-                            Err(e) => {
-                                log::error!("Failed to start new session: {}", e);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        KeyCode::Char('n') => try_start_new_run(app),
 
         _ => {}
     }
@@ -172,57 +124,7 @@ fn handle_state_keys<T: Transport>(app: &mut App<T>, key: KeyCode) {
                 log::warn!("Cannot edit while connected to server");
             }
         }
-        KeyCode::Char('n') => {
-            if app.state_tab.remote {
-                if app.state_tab.server_script_path.is_none() {
-                    log::warn!("Cannot start new run: No script available from server.");
-                    log::info!("The server must have a running script for remote rerun.");
-                } else if !app.state_tab.can_rerun() {
-                    log::warn!("Cannot start new run: No config available.");
-                    log::info!("Wait for the server to provide config data, or connect locally to load files.");
-                } else if app.connection_status {
-                    log::warn!("Server is still running. Press 'k' to kill it first, then 'n' to start new run.");
-                } else {
-                    log::info!("Starting remote rerun with server's script...");
-                    match app.state_tab.rerun() {
-                        Ok(()) => {
-                            log::info!("✓ New session started successfully!");
-                            log::info!(
-                                "→ The server will execute: {}",
-                                app.state_tab.server_script_path.as_ref().unwrap()
-                            );
-                        }
-                        Err(e) => {
-                            log::error!("Failed to start new session: {}", e);
-                        }
-                    }
-                }
-            } else {
-                if !app.state_tab.can_rerun() {
-                    log::warn!(
-                        "Cannot start new run: No config loaded. Press 'l' to load files first."
-                    );
-                } else if app.connection_status {
-                    log::warn!("Server is still running. Press 'k' to kill it first, then 'n' to start new run.");
-                } else {
-                    if app.state_tab.loaded_script_path.is_none()
-                        && app.state_tab.server_script_path.is_none()
-                    {
-                        log::warn!("No script file specified. Press 'l' to select one.");
-                    } else {
-                        log::info!("Starting new run...");
-                        match app.state_tab.rerun() {
-                            Ok(()) => {
-                                log::info!("✓ New session started successfully!");
-                            }
-                            Err(e) => {
-                                log::error!("Failed to start new session: {}", e);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        KeyCode::Char('n') => try_start_new_run(app),
 
         KeyCode::Char('l') => {
             if app.state_tab.remote {
@@ -238,5 +140,53 @@ fn handle_state_keys<T: Transport>(app: &mut App<T>, key: KeyCode) {
         KeyCode::Char('p') => app.pause_server(),
         KeyCode::Char('r') => app.resume_server(),
         _ => {}
+    }
+}
+fn try_start_new_run<T: Transport>(app: &mut App<T>) {
+    // if app.state_tab.remote && app.transport.transport_type() == TransportType::Tcp {
+    //     log::warn!("Cannot start new run: Remote TCP transport does not support this action.");
+    //     return;
+    // }
+
+    if app.state_tab.remote {
+        if app.state_tab.server_script_path.is_none() {
+            log::warn!("Cannot start new run: No script available from server.");
+            log::info!("The server must have a running script for remote rerun.");
+            return;
+        }
+    } else if !app.state_tab.can_rerun() {
+        log::warn!("Cannot start new run: No config loaded. Press 'l' to load files first.");
+        return;
+    }
+
+    if app.connection_status {
+        log::warn!(
+            "Server is still running. Press 'k' to kill it first, then 'n' to start new run."
+        );
+        return;
+    }
+
+    if !app.state_tab.remote
+        && app.state_tab.loaded_script_path.is_none()
+        && app.state_tab.server_script_path.is_none()
+    {
+        log::warn!("No script file specified. Press 'l' to select one.");
+        return;
+    }
+
+    if app.state_tab.remote {
+        log::info!("Starting remote rerun with server's script...");
+    } else {
+        log::info!("Starting new run...");
+    }
+
+    match app.state_tab.rerun() {
+        Ok(()) => {
+            log::info!("New session started successfully!");
+            if let Some(path) = app.state_tab.server_script_path.as_ref() {
+                log::info!("The server will execute: {}", path);
+            }
+        }
+        Err(e) => log::error!("Failed to start new session: {}", e),
     }
 }

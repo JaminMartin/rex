@@ -8,6 +8,14 @@ pub trait Transport {
     fn disconnect(&mut self) -> Option<String> {
         None
     }
+    fn transport_type(&self) -> TransportType;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TransportType {
+    Http,
+    Tcp,
+    Ws,
 }
 #[derive(Debug)]
 pub enum TransportImpl {
@@ -46,6 +54,13 @@ impl Transport for TransportImpl {
             TransportImpl::Http(t) => t.disconnect(),
             TransportImpl::Tcp(t) => t.disconnect(),
             TransportImpl::Ws(t) => t.disconnect(),
+        }
+    }
+    fn transport_type(&self) -> TransportType {
+        match self {
+            TransportImpl::Http(t) => t.transport_type(),
+            TransportImpl::Tcp(t) => t.transport_type(),
+            TransportImpl::Ws(t) => t.transport_type(),
         }
     }
 }

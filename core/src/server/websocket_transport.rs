@@ -4,7 +4,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-use crate::data_handler::transport::Transport;
+use crate::data_handler::transport::{Transport, TransportType};
 
 struct WsCommand {
     command: String,
@@ -87,7 +87,9 @@ impl Transport for WebSocketTransport {
     fn is_connected(&self) -> bool {
         self.tx.lock().expect("web socket not running").is_some()
     }
-
+    fn transport_type(&self) -> TransportType {
+        TransportType::Ws
+    }
     fn ensure_connection(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let mut guard = self.tx.lock().unwrap();
         if guard.is_none() {
