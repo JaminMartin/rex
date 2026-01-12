@@ -38,15 +38,23 @@ pub fn handle_key_event<T: Transport>(app: &mut App<T>, event: KeyEvent, remote:
 
     match key {
         KeyCode::Char('q') => {
-            if remote {
-                app.state_tab.cleanup_rerun();
-
-                return true;
-            } else {
-                app.state_tab.cleanup_rerun();
-                app.kill_server();
-                return true;
+            // Check if it's TCP transport and cleanup if needed
+            if app.transport.transport_type() == TransportType::Tcp {
+                // Downcast to access TCP-specific cleanup
+                if let Some(tcp_transport) = app
+                    .transport
+                    .as_any_mut()
+                    .downcast_mut::<crate::tcp_handler::TCPTransport>()
+                {
+                    tcp_transport.cleanup_rerun();
+                }
             }
+
+            if !remote {
+                app.kill_server();
+            }
+
+            return true;
         }
         KeyCode::Tab => {
             app.switch_tab();
@@ -118,24 +126,42 @@ fn handle_state_keys<T: Transport>(app: &mut App<T>, key: KeyCode) {
         KeyCode::Left => app.state_tab.previous_secondary(),
         KeyCode::Char('f') => app.state_tab.toggle_focus(),
         KeyCode::Char('e') => {
-            if !app.connection_status {
-                app.state_tab.start_edit();
-            } else {
-                log::warn!("Cannot edit while connected to server");
+            // Can edit if session is not running AND (local OR remote HTTP)
+            match (
+                app.session_running,
+                app.state_tab.remote,
+                app.transport.transport_type(),
+            ) {
+                (true, _, _) => {
+                    log::warn!("Cannot edit while a session is running");
+                }
+                (false, true, TransportType::Tcp) => {
+                    log::warn!("Remote TCP is view-only - editing not allowed");
+                }
+                (false, _, _) => {
+                    app.state_tab.start_edit();
+                }
+            }
+        }
+
+        KeyCode::Char('l') => {
+            match (
+                app.session_running,
+                app.state_tab.remote,
+                app.transport.transport_type(),
+            ) {
+                (true, _, _) => {
+                    log::warn!("Cannot load files while a session is running");
+                }
+                (false, true, TransportType::Tcp) => {
+                    log::warn!("Remote TCP is view-only - cannot load files");
+                }
+                (false, _, _) => {
+                    app.state_tab.start_config_picker();
+                }
             }
         }
         KeyCode::Char('n') => try_start_new_run(app),
-
-        KeyCode::Char('l') => {
-            if app.state_tab.remote {
-                log::warn!("Cannot load files in remote mode (security restriction).");
-                log::info!("Remote viewers can only use the server's existing script.");
-            } else if !app.connection_status {
-                app.state_tab.start_config_picker();
-            } else {
-                log::warn!("Cannot load files while connected to server");
-            }
-        }
         KeyCode::Char('k') => app.kill_server(),
         KeyCode::Char('p') => app.pause_server(),
         KeyCode::Char('r') => app.resume_server(),
@@ -143,50 +169,53 @@ fn handle_state_keys<T: Transport>(app: &mut App<T>, key: KeyCode) {
     }
 }
 fn try_start_new_run<T: Transport>(app: &mut App<T>) {
-    // if app.state_tab.remote && app.transport.transport_type() == TransportType::Tcp {
-    //     log::warn!("Cannot start new run: Remote TCP transport does not support this action.");
-    //     return;
-    // }
-
-    if app.state_tab.remote {
-        if app.state_tab.server_script_path.is_none() {
-            log::warn!("Cannot start new run: No script available from server.");
-            log::info!("The server must have a running script for remote rerun.");
-            return;
-        }
-    } else if !app.state_tab.can_rerun() {
-        log::warn!("Cannot start new run: No config loaded. Press 'l' to load files first.");
+    // Remote TCP cannot start new runs
+    if app.state_tab.remote && app.transport.transport_type() == TransportType::Tcp {
+        log::warn!("Cannot start new run: Remote TCP is view-only.");
         return;
     }
 
-    if app.connection_status {
+    // Check if a session is already running
+    if app.session_running {
         log::warn!(
-            "Server is still running. Press 'k' to kill it first, then 'n' to start new run."
+            "A session is already running. Press 'k' to kill it first, then 'n' to start new run."
         );
         return;
     }
 
-    if !app.state_tab.remote
-        && app.state_tab.loaded_script_path.is_none()
-        && app.state_tab.server_script_path.is_none()
-    {
-        log::warn!("No script file specified. Press 'l' to select one.");
+    // For remote HTTP, check if any script is available
+    if app.state_tab.remote && app.transport.transport_type() == TransportType::Http {
+        if app.state_tab.loaded_script_path.is_none() && app.state_tab.server_script_path.is_none()
+        {
+            log::warn!("Cannot start new run: No script available.");
+            log::info!("Press 'l' to load a config and script file.");
+            return;
+        }
+    }
+
+    // For local, check if config is loaded
+    if !app.state_tab.remote && !app.state_tab.can_rerun() {
+        log::warn!("Cannot start new run: No config loaded. Press 'l' to load files first.");
         return;
     }
 
-    if app.state_tab.remote {
-        log::info!("Starting remote rerun with server's script...");
-    } else {
-        log::info!("Starting new run...");
-    }
+    // Build and execute
+    let run_args_result = match app.transport.transport_type() {
+        TransportType::Http | TransportType::Ws => app.state_tab.build_http_run_args(),
+        TransportType::Tcp => app.state_tab.build_run_args(),
+    };
 
-    match app.state_tab.rerun() {
-        Ok(()) => {
-            log::info!("New session started successfully!");
-            if let Some(path) = app.state_tab.server_script_path.as_ref() {
-                log::info!("The server will execute: {}", path);
+    match run_args_result {
+        Ok(run_args) => match app.transport.rerun(run_args) {
+            Ok(()) => {
+                log::info!("New session started successfully!");
+                app.session_running = true; // Mark session as running
+                if let Some(path) = app.state_tab.server_script_path.as_ref() {
+                    log::info!("The server will execute: {}", path);
+                }
             }
-        }
-        Err(e) => log::error!("Failed to start new session: {}", e),
+            Err(e) => log::error!("Failed to start new session: {}", e),
+        },
+        Err(e) => log::error!("Failed to build run arguments: {}", e),
     }
 }

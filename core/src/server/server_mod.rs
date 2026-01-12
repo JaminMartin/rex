@@ -253,7 +253,14 @@ async fn run_handler(
         })),
     }
 }
-
+async fn check_session(State(state): State<AppState>) -> impl IntoResponse {
+    let running = state.running.load(Ordering::SeqCst);
+    if running {
+        StatusCode::OK
+    } else {
+        StatusCode::NO_CONTENT // 204: Server is up, but no session active
+    }
+}
 pub async fn run_server(
     args: ServeArgs,
     shutting_down: Arc<AtomicBool>,
@@ -275,6 +282,7 @@ pub async fn run_server(
         .route("/kill", post(kill))
         .route("/pause", post(pause))
         .route("/continue", post(resume))
+        .route("/status_check", get(check_session))
         .route("/ws", get(websocket_handler))
         .with_state(state);
 

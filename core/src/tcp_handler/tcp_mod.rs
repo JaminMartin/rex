@@ -7,7 +7,9 @@ use clickhouse::Client;
 use std::io;
 use std::net::SocketAddr;
 use std::path::MAIN_SEPARATOR;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::OwnedWriteHalf;
@@ -343,6 +345,9 @@ use std::net::TcpStream as SyncTcpStream;
 pub struct TCPTransport {
     addr: String,
     stream: Option<SyncTcpStream>,
+    rerun_handle: Option<JoinHandle<()>>,
+    rerun_shutdown_tx: Option<broadcast::Sender<()>>,
+    rerun_shutting_down: Option<Arc<AtomicBool>>,
 }
 
 impl TCPTransport {
@@ -350,7 +355,51 @@ impl TCPTransport {
         TCPTransport {
             addr: addr.to_string(),
             stream: None,
+            rerun_handle: None,
+            rerun_shutdown_tx: None,
+            rerun_shutting_down: None,
         }
+    }
+
+    pub fn cleanup_rerun(&mut self) {
+        if let Some(ref handle) = self.rerun_handle {
+            if !handle.is_finished() {
+                log::info!("TUI exiting, shutting down active rerun session gracefully...");
+
+                // Signal shutdown
+                if let Some(ref shutting_down) = self.rerun_shutting_down {
+                    shutting_down.store(true, Ordering::SeqCst);
+                }
+
+                if let Some(ref tx) = self.rerun_shutdown_tx {
+                    let _ = tx.send(());
+                }
+
+                // Wait for graceful shutdown with timeout
+                if let Some(handle) = self.rerun_handle.take() {
+                    let start = std::time::Instant::now();
+                    let timeout = Duration::from_secs(30);
+
+                    // Poll until thread finishes or timeout
+                    while !handle.is_finished() && start.elapsed() < timeout {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+
+                    if handle.is_finished() {
+                        let _ = handle.join();
+                        log::info!("Rerun session shutdown completed successfully");
+                    } else {
+                        log::warn!(
+                            "Rerun session did not complete within timeout, detaching thread"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Clean up
+        self.rerun_shutdown_tx = None;
+        self.rerun_shutting_down = None;
     }
 }
 
@@ -393,8 +442,55 @@ impl Transport for TCPTransport {
     fn is_connected(&self) -> bool {
         self.stream.is_some()
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
     fn transport_type(&self) -> TransportType {
         TransportType::Tcp
+    }
+    fn rerun(&mut self, args: crate::cli_tool::RunArgs) -> Result<(), Box<dyn std::error::Error>> {
+        log::info!("Starting local rerun via TCP...");
+        log::info!("  Config: {:?}", args.config);
+        log::info!("  Script: {:?}", args.path);
+        log::info!("  Output: {:?}", args.output);
+
+        // Create shutdown infrastructure for the new session
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let uuid = uuid::Uuid::new_v4();
+        let shutdown_tx_clone = shutdown_tx.clone();
+
+        // Spawn ctrl-c handler for this session
+        let shutdown_tx_ctrlc = shutdown_tx.clone();
+        let shutting_down_ctrlc = shutting_down.clone();
+
+        tokio::spawn(async move {
+            if let Ok(()) = tokio::signal::ctrl_c().await {
+                if !shutting_down_ctrlc.load(Ordering::SeqCst) {
+                    log::info!("Ctrl-C received in rerun session, initiating shutdown...");
+                    shutting_down_ctrlc.store(true, Ordering::SeqCst);
+                    let _ = shutdown_tx_ctrlc.send(());
+                }
+            }
+        });
+
+        // Spawn the session thread
+        let handle = std::thread::spawn(move || {
+            log::info!("Rerun session thread started");
+            crate::cli_tool::run_session(args, shutdown_tx_clone, log::LevelFilter::Info, uuid);
+            log::info!("Rerun session thread completed");
+        });
+
+        // Store the handle and shutdown mechanism
+        self.rerun_handle = Some(handle);
+        self.rerun_shutdown_tx = Some(shutdown_tx);
+        self.rerun_shutting_down = Some(shutting_down);
+
+        log::info!("✓ New session spawned successfully!");
+        Ok(())
     }
 }

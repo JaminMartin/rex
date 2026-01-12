@@ -765,15 +765,16 @@ impl StateTab {
 
     fn get_script_path(&self) -> Option<PathBuf> {
         if self.remote {
-            self.server_script_path.as_ref().map(|s| PathBuf::from(s))
+            self.loaded_script_path
+                .clone()
+                .or_else(|| self.server_script_path.as_ref().map(|s| PathBuf::from(s)))
         } else {
             self.loaded_script_path
                 .clone()
                 .or_else(|| self.server_script_path.as_ref().map(|s| PathBuf::from(s)))
         }
     }
-
-    pub fn rerun(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn build_run_args(&self) -> Result<crate::cli_tool::RunArgs, Box<dyn std::error::Error>> {
         let temp_config = self.save_config_to_temp_file()?;
         let script_path = self.get_script_path().ok_or("No script file available")?;
 
@@ -784,14 +785,9 @@ impl StateTab {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        log::info!("Starting new rex run...");
-        log::info!("  Config: {:?}", temp_config);
-        log::info!("  Script: {:?}", script_path);
-        log::info!("  Output: {:?}", output_dir);
-
-        let new_args = crate::cli_tool::RunArgs {
-            path: script_path.clone(),
-            config: Some(temp_config.clone().to_string_lossy().to_string()),
+        Ok(crate::cli_tool::RunArgs {
+            path: script_path,
+            config: Some(temp_config.to_string_lossy().to_string()),
             output: output_dir.to_string_lossy().to_string(),
             dry_run: false,
             email: None,
@@ -800,86 +796,65 @@ impl StateTab {
             interactive: false,
             port: None,
             meta_json: None,
+        })
+    }
+
+    // Add new method to build config as JSON string for HTTP
+    pub fn build_config_json(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let session_info = self.session_info.as_ref().ok_or("No session info")?;
+
+        let devices = if !self.device_configs.is_empty() {
+            let mut device_map = HashMap::new();
+            for (name, config) in &self.device_configs {
+                device_map.insert(
+                    name.clone(),
+                    crate::cli_tool::DeviceConfig {
+                        config: config.clone(),
+                    },
+                );
+            }
+            Some(device_map)
+        } else {
+            None
         };
 
-        // Create shutdown infrastructure for the new session
-        let (shutdown_tx, _) = broadcast::channel(1);
-        let shutting_down = Arc::new(AtomicBool::new(false));
-        let uuid = Uuid::new_v4();
+        let minimal_info = crate::cli_tool::MinimalSessionInfo {
+            name: session_info.name.clone(),
+            email: session_info.email.clone(),
+            session_name: session_info.session_name.clone(),
+            session_description: session_info.session_description.clone(),
+            devices,
+        };
 
-        // Clone for the thread
-        let shutdown_tx_clone = shutdown_tx.clone();
-        let shutting_down_clone = shutting_down.clone();
-
-        // Spawn ctrl-c handler for this session
-        let shutdown_tx_ctrlc = shutdown_tx.clone();
-        let shutting_down_ctrlc = shutting_down.clone();
-
-        tokio::spawn(async move {
-            if let Ok(()) = tokio::signal::ctrl_c().await {
-                if !shutting_down_ctrlc.load(Ordering::SeqCst) {
-                    log::info!("Ctrl-C received in rerun session, initiating shutdown...");
-                    shutting_down_ctrlc.store(true, Ordering::SeqCst);
-                    let _ = shutdown_tx_ctrlc.send(());
-                }
-            }
-        });
-
-        // Spawn the session thread
-        let handle = std::thread::spawn(move || {
-            log::info!("Rerun session thread started");
-            crate::cli_tool::run_session(new_args, shutdown_tx_clone, LevelFilter::Info, uuid);
-            log::info!("Rerun session thread completed");
-        });
-
-        // Store the handle and shutdown mechanism
-        self.rerun_handle = Some(handle);
-        self.rerun_shutdown_tx = Some(shutdown_tx);
-        self.rerun_shutting_down = Some(shutting_down);
-
-        log::info!("✓ New session spawned successfully!");
-        Ok(())
+        Ok(serde_json::to_string(&minimal_info)?)
     }
-    pub fn cleanup_rerun(&mut self) {
-        if let Some(ref handle) = self.rerun_handle {
-            if !handle.is_finished() {
-                log::info!("TUI exiting, shutting down active rerun session gracefully...");
 
-                // Signal shutdown
-                if let Some(ref shutting_down) = self.rerun_shutting_down {
-                    shutting_down.store(true, Ordering::SeqCst);
-                }
+    // Add method to build HTTP-specific run args
+    pub fn build_http_run_args(
+        &self,
+    ) -> Result<crate::cli_tool::RunArgs, Box<dyn std::error::Error>> {
+        let script_path = self.get_script_path().ok_or("No script file available")?;
+        let config_json = self.build_config_json()?;
 
-                if let Some(ref tx) = self.rerun_shutdown_tx {
-                    let _ = tx.send(());
-                }
+        let output_dir = self
+            .loaded_config_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-                // Wait for graceful shutdown with timeout
-                if let Some(handle) = self.rerun_handle.take() {
-                    let start = std::time::Instant::now();
-                    let timeout = Duration::from_secs(30); // Adjust as needed
-
-                    // Poll until thread finishes or timeout
-                    while !handle.is_finished() && start.elapsed() < timeout {
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-
-                    if handle.is_finished() {
-                        let _ = handle.join();
-                        log::info!("Rerun session shutdown completed successfully");
-                    } else {
-                        log::warn!(
-                            "Rerun session did not complete within timeout, detaching thread"
-                        );
-                        // Thread will continue but we're moving on
-                    }
-                }
-            }
-        }
-
-        // Clean up
-        self.rerun_shutdown_tx = None;
-        self.rerun_shutting_down = None;
+        Ok(crate::cli_tool::RunArgs {
+            path: script_path,
+            config: Some(config_json), // This is now JSON, not a file path
+            output: output_dir.to_string_lossy().to_string(),
+            dry_run: false,
+            email: None,
+            delay: 0,
+            loops: 1,
+            interactive: false,
+            port: None,
+            meta_json: None,
+        })
     }
     fn render_edit_popup(&self, f: &mut Frame, area: Rect) {
         let popup_area = centered_rect(60, 20, area);

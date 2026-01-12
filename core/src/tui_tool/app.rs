@@ -43,6 +43,7 @@ pub struct App<T: Transport> {
     pub connection_status: bool,
     pub current_device_streams: Vec<String>,
     pub show_popup: bool,
+    pub session_running: bool,
     pub has_warned_disconnected: bool,
     pub active_tab: TabView,
     pub chart_tab: ChartTab,
@@ -67,6 +68,7 @@ impl<T: Transport> App<T> {
             x_axis_stream: None,
             y_axis_stream: None,
             transport,
+            session_running: false,
             connection_status: true,
             show_popup: false,
             has_warned_disconnected: false,
@@ -116,7 +118,13 @@ impl<T: Transport> App<T> {
                     self.has_warned_disconnected = false;
                 }
 
+                // Check if we actually got data (session is running)
                 if !response.is_empty() {
+                    if !self.session_running {
+                        log::info!("Session detected as running");
+                        self.session_running = true;
+                    }
+
                     match serde_json::from_str::<ServerResponse>(&response) {
                         Ok(server_response) => {
                             self.devices = server_response
@@ -148,9 +156,18 @@ impl<T: Transport> App<T> {
                             log::warn!("Failed to parse server response: {}", e);
                         }
                     }
+                } else {
+                    // Empty response means no session running
+                    if self.session_running {
+                        log::info!("Session ended");
+                        self.session_running = false;
+                    }
                 }
             }
-            Err(e) => self.handle_transport_error(&*e),
+            Err(e) => {
+                self.handle_transport_error(&*e);
+                self.session_running = false; // If we can't connect, no session is running
+            }
         }
     }
 
@@ -164,10 +181,23 @@ impl<T: Transport> App<T> {
                 }
 
                 if !response.is_empty() {
+                    if !self.session_running {
+                        log::info!("Session detected as running");
+                        self.session_running = true;
+                    }
                     let _ = self.state_tab.update_from_json(&response);
+                } else {
+                    // Empty response means no session running
+                    if self.session_running {
+                        log::info!("Session ended");
+                        self.session_running = false;
+                    }
                 }
             }
-            Err(e) => self.handle_transport_error(&*e),
+            Err(e) => {
+                self.handle_transport_error(&*e);
+                self.session_running = false;
+            }
         }
     }
 
