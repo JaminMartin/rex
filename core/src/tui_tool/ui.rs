@@ -3,7 +3,7 @@ use crate::tui_tool::app::{App, TabView};
 use crate::tui_tool::keybindings::handle_key_event;
 use crate::tui_tool::tabs::chart;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -54,7 +54,7 @@ fn run_app<T: Transport>(
             .checked_sub(last_tick.elapsed())
             .unwrap_or_else(|| Duration::from_secs(0));
         if crossterm::event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+            if let CrosstermEvent::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     if handle_key_event(&mut app, key, remote) {
                         return Ok(());
