@@ -238,11 +238,18 @@ pub fn run_session(
             let script_path_clone = Arc::clone(&script_path);
             let script_path_str = script_path_clone.as_ref().to_string_lossy().into_owned();
             log::info!("Server is starting...");
-
+            let subsampling = match get_configuration() {
+                Ok(configuration) => configuration.general.subsampling.unwrap_or(true),
+                Err(e) => {
+                    log::error!("failed to get configuration due to: {e}");
+                    return;
+                }
+            };
             let state = Arc::new(Mutex::new(ServerState::new(
                 uuid,
                 additional_metadata.clone(),
                 script_path_str,
+                subsampling,
             )));
 
             let shutdown_rx_tcp = shutdown_tx.subscribe();

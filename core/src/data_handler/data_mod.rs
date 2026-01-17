@@ -28,6 +28,7 @@ pub struct GeneralConfig {
     pub port: String,
     pub interpreter: String,
     pub validations: Option<Vec<String>>,
+    pub subsampling: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -121,6 +122,11 @@ pub struct SessionMetadata {
     #[serde(flatten)]
     pub meta: HashMap<String, Value>,
 }
+
+/// Accepts both `[f64]` (preferred) and `[[f64]]` inputs.
+/// `Single` is the canonical form; promotion to `Multi` is handled
+/// explicitly during merge/update based on domain logic. It is however,
+/// valid to send a [[f64]] and rex will handle this accordingly.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MeasurementData {
@@ -472,9 +478,8 @@ impl Device {
             measurements: combined,
         }
     }
-    fn latest_data_truncated(&self, max_measurements: usize) -> DeviceData {
-        let use_lttb = true; // TODO: make this a config var
-
+    fn latest_data_truncated(&self, max_measurements: usize, subsampling: bool) -> DeviceData {
+        let use_lttb = subsampling;
         if use_lttb {
             self.latest_data_lttb(max_measurements)
         } else {
@@ -601,6 +606,7 @@ pub struct ServerState {
     pub entities: HashMap<String, Entity>,
     pub internal_state: bool,
     pub retention: bool,
+    pub subsampling: bool,
     pub uuid: Uuid,
     pub external_metadata: Option<HashMap<String, Value>>,
     pub run_file: String,
@@ -613,12 +619,13 @@ pub struct Summary {
 }
 
 impl ServerState {
-    pub fn new(uuid: Uuid, external_metadata: String, run_file: String) -> Self {
+    pub fn new(uuid: Uuid, external_metadata: String, run_file: String, subsampling: bool) -> Self {
         let external_metadata = parse_external_metadata(external_metadata);
         ServerState {
             entities: HashMap::new(),
             internal_state: true,
             retention: true,
+            subsampling: subsampling,
             uuid,
             external_metadata,
             run_file,
@@ -994,7 +1001,7 @@ impl ServerState {
                 Entity::Device(device) => {
                     stream_contents.insert(
                         device.device_name.clone(),
-                        device.latest_data_truncated(100),
+                        device.latest_data_truncated(100, self.subsampling),
                     );
                 }
                 Entity::Session(_session) => {}
@@ -1009,7 +1016,7 @@ impl Default for ServerState {
         let uuid = Uuid::new_v4();
         let external_metadata = "".to_string();
         let runfile = "".to_string();
-        Self::new(uuid, external_metadata, runfile)
+        Self::new(uuid, external_metadata, runfile, true)
     }
 }
 pub fn sanitize_filename(name: String) -> String {
