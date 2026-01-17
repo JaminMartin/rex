@@ -1,8 +1,8 @@
 use clap::Parser;
-use rex_core::cli_tool::{
+use rex::cli_tool::{
     cli_standalone, get_log_level, init_logger, process_args, run_session, Cli, Commands,
 };
-use rex_core::server::run_server;
+use rex::server::run_server;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
