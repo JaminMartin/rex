@@ -126,7 +126,6 @@ fn handle_state_keys<T: Transport>(app: &mut App<T>, key: KeyCode) {
         KeyCode::Left => app.state_tab.previous_secondary(),
         KeyCode::Char('f') => app.state_tab.toggle_focus(),
         KeyCode::Char('e') => {
-            // Can edit if session is not running AND (local OR remote HTTP)
             match (
                 app.session_running,
                 app.state_tab.remote,
@@ -169,13 +168,11 @@ fn handle_state_keys<T: Transport>(app: &mut App<T>, key: KeyCode) {
     }
 }
 fn try_start_new_run<T: Transport>(app: &mut App<T>) {
-    // Remote TCP cannot start new runs
     if app.state_tab.remote && app.transport.transport_type() == TransportType::Tcp {
         log::warn!("Cannot start new run: Remote TCP is view-only.");
         return;
     }
 
-    // Check if a session is already running
     if app.session_running {
         log::warn!(
             "A session is already running. Press 'k' to kill it first, then 'n' to start new run."
@@ -183,7 +180,6 @@ fn try_start_new_run<T: Transport>(app: &mut App<T>) {
         return;
     }
 
-    // For remote HTTP, check if any script is available
     if app.state_tab.remote && app.transport.transport_type() == TransportType::Http {
         if app.state_tab.loaded_script_path.is_none() && app.state_tab.server_script_path.is_none()
         {
@@ -193,13 +189,11 @@ fn try_start_new_run<T: Transport>(app: &mut App<T>) {
         }
     }
 
-    // For local, check if config is loaded
     if !app.state_tab.remote && !app.state_tab.can_rerun() {
         log::warn!("Cannot start new run: No config loaded. Press 'l' to load files first.");
         return;
     }
 
-    // Build and execute
     let run_args_result = match app.transport.transport_type() {
         TransportType::Http | TransportType::Ws => app.state_tab.build_http_run_args(),
         TransportType::Tcp => app.state_tab.build_run_args(),

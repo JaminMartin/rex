@@ -118,7 +118,6 @@ impl<T: Transport> App<T> {
                     self.has_warned_disconnected = false;
                 }
 
-                // Check if we actually got data (session is running)
                 if !response.is_empty() {
                     if !self.session_running {
                         log::info!("Session detected as running");
@@ -157,7 +156,6 @@ impl<T: Transport> App<T> {
                         }
                     }
                 } else {
-                    // Empty response means no session running
                     if self.session_running {
                         log::info!("Session ended");
                         self.session_running = false;
@@ -187,7 +185,6 @@ impl<T: Transport> App<T> {
                     }
                     let _ = self.state_tab.update_from_json(&response);
                 } else {
-                    // Empty response means no session running
                     if self.session_running {
                         log::info!("Session ended");
                         self.session_running = false;

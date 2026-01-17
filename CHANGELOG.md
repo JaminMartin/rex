@@ -6,17 +6,20 @@
 - Added sub sampling
 - Improve device data collection handling
 - Added session config view and editing
+- Alpha version of HTTP viewer (WIP)
 
 ### 🐛 Bug Fixes
 
 - Added better support for nix on MacOS
 - Updated rex core to handle new TUI feats
+- Better rerun support for local TCP connection
 
 ### 💼 Other
 
 - Version bump to reflect small changes
 - Updated changelog
 - Improved macos support
+- Updated changelog
 
 ### 🚜 Refactor
 
@@ -25,6 +28,7 @@
 ### ⚙️ Miscellaneous Tasks
 
 - Using cliff.toml for git cliff
+- Start of async refactor for TUI veiwer
 ## [1.0.0] - 2025-09-15
 
 ### 🐛 Bug Fixes
