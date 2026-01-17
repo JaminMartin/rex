@@ -799,7 +799,6 @@ impl StateTab {
         })
     }
 
-    // Add new method to build config as JSON string for HTTP
     pub fn build_config_json(&self) -> Result<String, Box<dyn std::error::Error>> {
         let session_info = self.session_info.as_ref().ok_or("No session info")?;
 
@@ -829,7 +828,6 @@ impl StateTab {
         Ok(serde_json::to_string(&minimal_info)?)
     }
 
-    // Add method to build HTTP-specific run args
     pub fn build_http_run_args(
         &self,
     ) -> Result<crate::cli_tool::RunArgs, Box<dyn std::error::Error>> {

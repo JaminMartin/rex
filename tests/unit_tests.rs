@@ -1,8 +1,8 @@
 // tests/basic_test.rs
 
 use regex::Regex;
-use rex_core::data_handler::*;
-use rex_core::tcp_handler::*;
+use rex::data_handler::*;
+use rex::tcp_handler::*;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;

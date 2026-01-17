@@ -53,7 +53,6 @@ impl FilePicker {
         {
             let path = entry.path();
 
-            // Only include files with matching extensions
             if path.is_file() {
                 if let Some(ext) = path.extension() {
                     if self.extensions.iter().any(|e| {
@@ -161,7 +160,6 @@ impl FilePicker {
         self.list_state.select(Some(self.selected_index));
     }
 
-    /// Navigate up one directory level
     pub fn navigate_up(&mut self) {
         if let Some(parent) = self.current_dir.parent() {
             self.current_dir = parent.to_path_buf();
@@ -172,12 +170,9 @@ impl FilePicker {
         }
     }
 
-    /// Navigate down into the selected file's parent directory
     pub fn navigate_down(&mut self) {
         if let Some(selected) = self.get_selected() {
-            // Get the parent directory of the selected file
             if let Some(parent) = selected.parent() {
-                // Only navigate if it's actually a subdirectory of current_dir
                 if parent != self.current_dir && parent.starts_with(&self.current_dir) {
                     self.current_dir = parent.to_path_buf();
                     self.query.clear();
@@ -189,7 +184,6 @@ impl FilePicker {
         }
     }
 
-    /// Change to a specific directory
     pub fn change_directory(&mut self, new_dir: PathBuf) {
         if new_dir.is_dir() {
             self.current_dir = new_dir;
@@ -200,12 +194,10 @@ impl FilePicker {
         }
     }
 
-    /// Get the current directory
     pub fn current_directory(&self) -> &PathBuf {
         &self.current_dir
     }
 
-    /// Set the maximum scan depth
     pub fn set_max_depth(&mut self, depth: usize) {
         self.max_depth = depth;
     }
@@ -252,7 +244,6 @@ impl FilePicker {
         f.render_widget(Clear, popup_area);
         f.render_widget(input, chunks[0]);
 
-        // Render file list
         let items: Vec<ListItem> = self
             .filtered_files
             .iter()
@@ -282,7 +273,6 @@ impl FilePicker {
 
         f.render_stateful_widget(list, chunks[1], &mut self.list_state);
 
-        // Render current directory status
         let current_dir_display = self.current_dir.to_string_lossy().to_string();
         let status = Paragraph::new(format!("Dir: {}", current_dir_display))
             .style(Style::default().fg(Color::DarkGray));

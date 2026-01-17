@@ -1,4 +1,3 @@
-// tui/widgets/popup.rs
 use ratatui::{
     layout::{Alignment, Constraint, Flex, Layout, Rect},
     prelude::*,
