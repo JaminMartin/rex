@@ -339,12 +339,14 @@ pub async fn send_to_clickhouse(
     }
 }
 
-use std::io::{BufRead, Write};
-use std::net::TcpStream as SyncTcpStream;
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct TCPTransport {
+    inner: Arc<Mutex<TCPTransportInner>>,
+}
+
+struct TCPTransportInner {
     addr: String,
-    stream: Option<SyncTcpStream>,
+    stream: Option<TcpStream>,
     rerun_handle: Option<JoinHandle<()>>,
     rerun_shutdown_tx: Option<broadcast::Sender<()>>,
     rerun_shutting_down: Option<Arc<AtomicBool>>,
@@ -353,36 +355,39 @@ pub struct TCPTransport {
 impl TCPTransport {
     pub fn new(addr: &str) -> Self {
         TCPTransport {
-            addr: addr.to_string(),
-            stream: None,
-            rerun_handle: None,
-            rerun_shutdown_tx: None,
-            rerun_shutting_down: None,
+            inner: Arc::new(Mutex::new(TCPTransportInner {
+                addr: addr.to_string(),
+                stream: None,
+                rerun_handle: None,
+                rerun_shutdown_tx: None,
+                rerun_shutting_down: None,
+            })),
         }
     }
 
-    pub fn cleanup_rerun(&mut self) {
-        if let Some(ref handle) = self.rerun_handle {
+    pub async fn cleanup_rerun(&mut self) {
+        let mut inner = self.inner.lock().await;
+
+        if let Some(ref handle) = inner.rerun_handle {
             if !handle.is_finished() {
                 log::info!("TUI exiting, shutting down active rerun session gracefully...");
 
-                // Signal shutdown
-                if let Some(ref shutting_down) = self.rerun_shutting_down {
+                if let Some(ref shutting_down) = inner.rerun_shutting_down {
                     shutting_down.store(true, Ordering::SeqCst);
                 }
 
-                if let Some(ref tx) = self.rerun_shutdown_tx {
+                if let Some(ref tx) = inner.rerun_shutdown_tx {
                     let _ = tx.send(());
                 }
 
-                // Wait for graceful shutdown with timeout
-                if let Some(handle) = self.rerun_handle.take() {
+                if let Some(handle) = inner.rerun_handle.take() {
+                    drop(inner);
+
                     let start = std::time::Instant::now();
                     let timeout = Duration::from_secs(30);
 
-                    // Poll until thread finishes or timeout
                     while !handle.is_finished() && start.elapsed() < timeout {
-                        std::thread::sleep(Duration::from_millis(100));
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
 
                     if handle.is_finished() {
@@ -393,55 +398,92 @@ impl TCPTransport {
                             "Rerun session did not complete within timeout, detaching thread"
                         );
                     }
+
+                    let mut inner = self.inner.lock().await;
+                    inner.rerun_shutdown_tx = None;
+                    inner.rerun_shutting_down = None;
                 }
             }
+        } else {
+            inner.rerun_shutdown_tx = None;
+            inner.rerun_shutting_down = None;
         }
-
-        // Clean up
-        self.rerun_shutdown_tx = None;
-        self.rerun_shutting_down = None;
     }
 }
 
+use async_trait::async_trait;
+
+#[async_trait]
 impl Transport for TCPTransport {
-    fn send_command(&mut self, command: &str) -> Result<String, Box<dyn std::error::Error>> {
-        self.ensure_connection()?;
+    async fn send_command(
+        &mut self,
+        command: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send>> {
+        self.ensure_connection().await?;
 
-        let stream = self.stream.as_mut().unwrap();
+        let mut inner = self.inner.lock().await;
+        let stream =
+            inner
+                .stream
+                .as_mut()
+                .ok_or_else(|| -> Box<dyn std::error::Error + Send> {
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::NotConnected,
+                        "No connection",
+                    ))
+                })?;
 
-        if let Err(e) = stream
-            .write_all(command.as_bytes())
-            .and_then(|_| stream.flush())
-        {
-            self.stream = None;
-            return Err(e.into());
+        if let Err(e) = stream.write_all(command.as_bytes()).await {
+            inner.stream = None;
+            return Err(Box::new(e));
         }
 
-        let mut reader = std::io::BufReader::new(stream.try_clone()?);
+        if let Err(e) = stream.flush().await {
+            inner.stream = None;
+            return Err(Box::new(e));
+        }
+
+        // Need to split the stream to read
+        let (reader, _writer) = stream.split();
+        let mut reader = BufReader::new(reader);
         let mut response = String::new();
 
-        match reader.read_line(&mut response) {
+        match reader.read_line(&mut response).await {
             Ok(0) => {
-                self.stream = None;
-                Err("Server closed connection".into())
+                inner.stream = None;
+                Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "Server closed connection",
+                )))
             }
             Ok(_) => Ok(response.trim().to_string()),
             Err(e) => {
-                self.stream = None;
-                Err(e.into())
+                inner.stream = None;
+                Err(Box::new(e))
             }
         }
     }
-    fn ensure_connection(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if self.stream.is_none() {
-            let stream = SyncTcpStream::connect(&self.addr)?;
-            self.stream = Some(stream);
+
+    async fn ensure_connection(&mut self) -> Result<(), Box<dyn std::error::Error + Send>> {
+        let mut inner = self.inner.lock().await;
+
+        if inner.stream.is_none() {
+            let stream = TcpStream::connect(&inner.addr)
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send> { Box::new(e) })?;
+            inner.stream = Some(stream);
         }
         Ok(())
     }
+
     fn is_connected(&self) -> bool {
-        self.stream.is_some()
+        if let Ok(inner) = self.inner.try_lock() {
+            inner.stream.is_some()
+        } else {
+            false
+        }
     }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -449,22 +491,25 @@ impl Transport for TCPTransport {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
+
     fn transport_type(&self) -> TransportType {
         TransportType::Tcp
     }
-    fn rerun(&mut self, args: crate::cli_tool::RunArgs) -> Result<(), Box<dyn std::error::Error>> {
+
+    async fn rerun(
+        &mut self,
+        args: crate::cli_tool::RunArgs,
+    ) -> Result<(), Box<dyn std::error::Error + Send>> {
         log::info!("Starting local rerun via TCP...");
         log::info!("  Config: {:?}", args.config);
         log::info!("  Script: {:?}", args.path);
         log::info!("  Output: {:?}", args.output);
 
-        // Create shutdown infrastructure for the new session
         let (shutdown_tx, _) = broadcast::channel(1);
         let shutting_down = Arc::new(AtomicBool::new(false));
         let uuid = uuid::Uuid::new_v4();
         let shutdown_tx_clone = shutdown_tx.clone();
 
-        // Spawn ctrl-c handler for this session
         let shutdown_tx_ctrlc = shutdown_tx.clone();
         let shutting_down_ctrlc = shutting_down.clone();
 
@@ -478,19 +523,18 @@ impl Transport for TCPTransport {
             }
         });
 
-        // Spawn the session thread
         let handle = std::thread::spawn(move || {
             log::info!("Rerun session thread started");
             crate::cli_tool::run_session(args, shutdown_tx_clone, log::LevelFilter::Info, uuid);
             log::info!("Rerun session thread completed");
         });
 
-        // Store the handle and shutdown mechanism
-        self.rerun_handle = Some(handle);
-        self.rerun_shutdown_tx = Some(shutdown_tx);
-        self.rerun_shutting_down = Some(shutting_down);
+        let mut inner = self.inner.lock().await;
+        inner.rerun_handle = Some(handle);
+        inner.rerun_shutdown_tx = Some(shutdown_tx);
+        inner.rerun_shutting_down = Some(shutting_down);
 
-        log::info!("✓ New session spawned successfully!");
+        log::info!("New session spawned successfully!");
         Ok(())
     }
 }
