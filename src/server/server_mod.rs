@@ -1,7 +1,6 @@
 use crate::cli_tool::run_session;
 use crate::cli_tool::{RunArgs, ServeArgs};
 use crate::data_handler::get_configuration;
-
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -12,21 +11,68 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-
 use futures_util::{SinkExt, StreamExt};
 use log::LevelFilter;
 use serde::Serialize;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use walkdir::WalkDir;
 
 use tokio::net::TcpStream;
 
+use crate::data_handler::configurable_dir_path;
 use tokio::signal::ctrl_c;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+fn get_allowed_scripts_dir() -> Result<PathBuf, String> {
+    configurable_dir_path("XDG_CONFIG_HOME", dirs::config_dir)
+        .map(|mut path| {
+            path.push("rex");
+            path.push("scripts");
+            path
+        })
+        .ok_or("Failed to get config directory".to_string())
+}
+async fn get_allowed_scripts_list() -> impl IntoResponse {
+    match get_allowed_scripts_dir() {
+        Ok(base_dir) => {
+            // Changed from Some to Ok
+            let mut files = Vec::new();
+
+            for entry in WalkDir::new(&base_dir)
+                .max_depth(4)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension() {
+                        if ext == "py" || ext == "rs" || ext == "m" {
+                            files.push(path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+
+            Json(serde_json::json!({
+                "base_dir": base_dir.to_string_lossy(),
+                "files": files
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            // Changed from None to Err
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get scripts directory: {}", e),
+        )
+            .into_response(),
+    }
+}
 async fn status() -> Result<&'static str, (StatusCode, String)> {
     Ok("Server is up!")
 }
@@ -218,7 +264,7 @@ async fn run_handler(
             ));
         }
     };
-    let addr = format!("0.0.0.0:{}", args.port.clone().unwrap_or(config_port));
+    let addr = format!("127.0.0.1:{}", args.port.clone().unwrap_or(config_port));
     {
         let mut tcp_addr = state.tcp_addr.lock().await;
         *tcp_addr = addr;
@@ -284,6 +330,7 @@ pub async fn run_server(
         .route("/continue", post(resume))
         .route("/status_check", get(check_session))
         .route("/ws", get(websocket_handler))
+        .route("/allowed_scripts", get(get_allowed_scripts_list))
         .with_state(state);
 
     log::info!("Rex Server listening on http://0.0.0.0:{}", args.address);
