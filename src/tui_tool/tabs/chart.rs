@@ -70,8 +70,8 @@ fn render_chart<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
             let y_min = y_values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
             let y_max = y_values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
 
-            let x_margin = (x_max - x_min) * 0.1;
-            let y_margin = (y_max - y_min) * 0.1;
+            let x_margin = (x_max - x_min) * 0.01;
+            let y_margin = (y_max - y_min) * 0.01;
 
             let x_labels: Vec<Span> = (0..=4)
                 .map(|i| {
