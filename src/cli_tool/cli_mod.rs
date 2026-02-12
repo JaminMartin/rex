@@ -318,7 +318,7 @@ pub fn run_session(
                         }
                     };
                     let remote = false;
-                    let addr = format!("0.0.0.0:{port_tui}");
+                    let addr = format!("127.0.0.1:{port_tui}");
                     let transport = TCPTransport::new(&addr);
 
                     match rt.block_on(run_tui(transport, remote)) {
@@ -330,7 +330,7 @@ pub fn run_session(
                 None
             };
             let tcp_server_thread = thread::spawn(move || {
-                let addr = format!("0.0.0.0:{port}");
+                let addr = format!("127.0.0.1:{port}");
 
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
