@@ -1,35 +1,35 @@
 use crate::data_handler::transport::Transport;
+use crate::tui_tool::action::Action;
 use crate::tui_tool::app::{App, TabView};
+use crate::tui_tool::event::{Event, EventHandler};
 use crate::tui_tool::keybindings::handle_key_event;
 use crate::tui_tool::tabs::chart;
+use crate::tui_tool::update::update;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{prelude::*, Frame};
-use std::{
-    io,
-    time::{Duration, Instant},
-};
+use std::io;
 
-pub async fn run_tui<T: Transport>(transport: T, remote: bool) -> tokio::io::Result<()> {
+pub async fn run_tui<T: Transport + Clone + Send + 'static>(
+    transport: T,
+    remote: bool,
+) -> tokio::io::Result<()> {
     enable_raw_mode()?;
-
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let tick_rate = Duration::from_millis(100);
-    let app = App::new(remote, transport);
-    let res = run_app(&mut terminal, app, tick_rate, remote);
+
+    let mut event_handler = EventHandler::new(100); // 100ms tick rate
+    let (action_tx, mut action_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(remote, transport, action_tx.clone());
+
+    let res = run_app(&mut terminal, &mut app, &mut event_handler, &mut action_rx).await;
 
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {
@@ -39,40 +39,46 @@ pub async fn run_tui<T: Transport>(transport: T, remote: bool) -> tokio::io::Res
     Ok(())
 }
 
-fn run_app<T: Transport>(
+async fn run_app<T: Transport + Clone + Send + 'static>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    mut app: App<T>,
-    tick_rate: Duration,
-    remote: bool,
+    app: &mut App<T>,
+    event_handler: &mut EventHandler,
+    action_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
 ) -> io::Result<()> {
-    let mut last_tick = Instant::now();
-
     loop {
-        terminal.draw(|f| ui(f, &mut app))?;
+        terminal.draw(|f| ui(f, app))?;
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
-        if crossterm::event::poll(timeout)? {
-            if let CrosstermEvent::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    if handle_key_event(&mut app, key, remote) {
-                        return Ok(());
+        tokio::select! {
+            event_result = event_handler.next() => {
+                match event_result {
+                    Ok(event) => {
+                        let actions = match event {
+                            Event::Tick => vec![Action::Tick],
+                            Event::Key(key) => handle_key_event(app, key),
+                            Event::Error => vec![],
+                        };
+
+                        for action in actions {
+                            let _ = app.action_tx.send(action);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Event handler error: {}", e);
                     }
                 }
             }
-        }
-
-        if last_tick.elapsed() >= tick_rate {
-            app.on_tick();
-            last_tick = Instant::now();
+            Some(action) = action_rx.recv() => {
+                update(app, action);
+                if app.should_quit {
+                    return Ok(());
+                }
+            }
         }
     }
 }
 
 pub fn ui<T: Transport>(f: &mut Frame, app: &mut App<T>) {
     let area = f.area();
-
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
@@ -88,7 +94,6 @@ pub fn ui<T: Transport>(f: &mut Frame, app: &mut App<T>) {
 
 fn render_tab_bar<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
     let tab_titles = vec!["Data", "Session Info"];
-
     let tabs: Vec<Line> = tab_titles
         .iter()
         .enumerate()
@@ -98,7 +103,6 @@ fn render_tab_bar<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
                 (1, TabView::State) => true,
                 _ => false,
             };
-
             let style = if is_active {
                 Style::default()
                     .fg(Color::Yellow)
@@ -106,7 +110,6 @@ fn render_tab_bar<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-
             Line::from(vec![
                 Span::raw("  "),
                 Span::styled(*title, style),
@@ -116,7 +119,6 @@ fn render_tab_bar<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
         .collect();
 
     let tabs_text: Vec<Span> = tabs.into_iter().flat_map(|line| line.spans).collect();
-
     let paragraph = ratatui::widgets::Paragraph::new(Line::from(tabs_text))
         .block(
             ratatui::widgets::Block::default()

@@ -1,25 +1,22 @@
+use crate::data_handler::configurable_dir_path;
+use crate::data_handler::transport::TransportType;
 use crate::data_handler::{SessionInfo, SessionMetadata, Summary};
+
 use crate::tui_tool::widgets::file_picker::FilePicker;
-use log::LevelFilter;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::{atomic::AtomicBool, Arc};
 use std::thread::JoinHandle;
-use std::time::Duration;
 use tokio::sync::broadcast;
 use toml::Value;
-use uuid::Uuid;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FocusSection {
     Session,
@@ -30,6 +27,23 @@ pub enum StateMode {
     Normal,
     PickingConfig,
     PickingScript,
+    FetchingScripts,
+}
+#[derive(Debug, Deserialize)]
+struct Config {
+    #[serde(alias = "experiment")]
+    session: Option<Session>,
+    device: HashMap<String, DeviceConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Session {
+    info: SessionInfo,
+}
+#[derive(Debug, Deserialize)]
+pub struct DeviceConfig {
+    #[serde(flatten)]
+    pub device_config: HashMap<String, Value>,
 }
 pub struct StateTab {
     pub session_info: Option<SessionInfo>,
@@ -98,7 +112,15 @@ impl StateTab {
             rerun_shutting_down: None,
         }
     }
-
+    pub fn set_remote_scripts(&mut self, base_dir: PathBuf, files: Vec<PathBuf>) {
+        self.file_picker = Some(FilePicker::new_remote(
+            base_dir,
+            files,
+            vec![".py".to_string(), ".rs".to_string(), ".m".to_string()],
+            "Select Allowed Script".to_string(),
+        ));
+        self.mode = StateMode::PickingScript;
+    }
     pub fn start_config_picker(&mut self) {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         self.file_picker = Some(FilePicker::new(
@@ -109,17 +131,11 @@ impl StateTab {
         self.mode = StateMode::PickingConfig;
     }
 
-    pub fn start_script_picker(&mut self) {
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        self.file_picker = Some(FilePicker::new(
-            current_dir,
-            vec![".py".to_string(), ".rs".to_string(), ".m".to_string()],
-            "Select Script File".to_string(),
-        ));
-        self.mode = StateMode::PickingScript;
-    }
-
-    pub fn handle_file_picker_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+    pub fn handle_file_picker_key(
+        &mut self,
+        key: crossterm::event::KeyCode,
+        transport: TransportType,
+    ) -> bool {
         if let Some(ref mut picker) = self.file_picker {
             match key {
                 crossterm::event::KeyCode::PageUp => {
@@ -167,7 +183,27 @@ impl StateTab {
                                 if let Err(e) = self.load_config_from_file(&selected) {
                                     log::error!("Failed to load config: {}", e);
                                 }
-                                self.start_script_picker();
+
+                                self.file_picker = None;
+
+                                if transport == TransportType::Http {
+                                    self.mode = StateMode::FetchingScripts;
+                                    return true;
+                                } else {
+                                    let current_dir = std::env::current_dir()
+                                        .unwrap_or_else(|_| PathBuf::from("."));
+                                    self.file_picker = Some(FilePicker::new(
+                                        current_dir,
+                                        vec![
+                                            ".py".to_string(),
+                                            ".rs".to_string(),
+                                            ".m".to_string(),
+                                        ],
+                                        "Select Script File".to_string(),
+                                    ));
+                                    self.mode = StateMode::PickingScript;
+                                    return false;
+                                }
                             }
                             StateMode::PickingScript => {
                                 self.loaded_script_path = Some(selected.clone());
@@ -175,11 +211,12 @@ impl StateTab {
                                 self.file_picker = None;
                                 self.mode = StateMode::Normal;
                                 log::info!("Ready to run with config and script file");
+                                return false;
                             }
                             _ => {}
                         }
                     }
-                    true
+                    false
                 }
                 crossterm::event::KeyCode::Esc => {
                     self.file_picker = None;
@@ -196,65 +233,20 @@ impl StateTab {
 
     fn load_config_from_file(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let contents = std::fs::read_to_string(path)?;
-        let config: toml::Value = toml::from_str(&contents)?;
+        let config: Config = toml::from_str(&contents)?;
 
-        if let Some(session_table) = config.get("session").and_then(|v| v.as_table()) {
-            if let Some(info_table) = session_table.get("info").and_then(|v| v.as_table()) {
-                let mut session_info = SessionInfo {
-                    name: info_table
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    email: info_table
-                        .get("email")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    session_name: info_table
-                        .get("session_name")
-                        .or_else(|| info_table.get("experiment_name"))
-                        .or_else(|| info_table.get("test_name"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    session_description: info_table
-                        .get("session_description")
-                        .or_else(|| info_table.get("experiment_description"))
-                        .or_else(|| info_table.get("test_description"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    meta: None,
-                };
-
-                if let Some(meta_table) = info_table.get("meta").and_then(|v| v.as_table()) {
-                    let mut meta_map = HashMap::new();
-                    for (key, value) in meta_table {
-                        meta_map.insert(key.clone(), value.clone());
-                    }
-                    session_info.meta = Some(SessionMetadata { meta: meta_map });
-                }
-
-                self.session_info = Some(session_info);
-                self.refresh_session_lists();
-            }
+        if let Some(session) = config.session {
+            self.session_info = Some(session.info);
+            self.refresh_session_lists();
         }
 
-        let mut device_configs = HashMap::new();
-        if let Some(device_table) = config.get("device").and_then(|v| v.as_table()) {
-            for (device_name, device_value) in device_table {
-                if let Some(device_config_table) = device_value.as_table() {
-                    let mut device_config = HashMap::new();
-                    for (config_key, config_value) in device_config_table {
-                        device_config.insert(config_key.clone(), config_value.clone());
-                    }
-                    device_configs.insert(device_name.clone(), device_config);
-                }
-            }
-        }
-
-        self.update_device_configs(device_configs);
+        self.update_device_configs(
+            config
+                .device
+                .into_iter()
+                .map(|(name, cfg)| (name, cfg.device_config))
+                .collect(),
+        );
 
         log::info!("Successfully loaded config from {:?}", path);
         Ok(())
@@ -754,7 +746,7 @@ impl StateTab {
     }
     pub fn can_rerun(&self) -> bool {
         let has_config = self.session_info.is_some() && !self.device_configs.is_empty();
-
+        // WIP will eventually be token based for running remote python scripts but allow for local search of allowed scritps
         if self.remote {
             has_config && self.server_script_path.is_some()
         } else {
@@ -841,6 +833,12 @@ impl StateTab {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
+        let allowed_dir = get_allowed_scripts_dir()
+            .map_err(|e| format!("Cannot verify script location: {}", e))?;
+
+        if !script_path.starts_with(&allowed_dir) {
+            return Err("Script must be from allowed scripts directory".into());
+        }
         Ok(crate::cli_tool::RunArgs {
             path: script_path,
             config: Some(config_json), // This is now JSON, not a file path
@@ -1032,4 +1030,13 @@ fn escape_toml_string(s: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "\\r")
         .replace('\t', "\\t")
+}
+fn get_allowed_scripts_dir() -> Result<PathBuf, String> {
+    configurable_dir_path("XDG_CONFIG_HOME", dirs::config_dir)
+        .map(|mut path| {
+            path.push("rex");
+            path.push("scripts");
+            path
+        })
+        .ok_or("Failed to get config directory".to_string())
 }

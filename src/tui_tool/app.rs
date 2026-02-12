@@ -1,10 +1,12 @@
 use crate::data_handler::transport::Transport;
 use crate::data_handler::DeviceData;
+use crate::tui_tool::action::Action;
 use crate::tui_tool::tabs::{chart::ChartTab, state::StateTab};
-use itertools::Itertools;
+
 use ratatui::widgets::ListState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TabView {
@@ -48,10 +50,13 @@ pub struct App<T: Transport> {
     pub active_tab: TabView,
     pub chart_tab: ChartTab,
     pub state_tab: StateTab,
+    pub action_tx: mpsc::UnboundedSender<Action>,
+    pub should_quit: bool,
+    pub in_rerun: bool,
 }
 
 impl<T: Transport> App<T> {
-    pub fn new(remote: bool, transport: T) -> App<T> {
+    pub fn new(remote: bool, transport: T, action_tx: mpsc::UnboundedSender<Action>) -> App<T> {
         let mut devices_state = ListState::default();
         devices_state.select(Some(0));
         let devices: Vec<Device> = vec![];
@@ -76,6 +81,9 @@ impl<T: Transport> App<T> {
             active_tab: TabView::Chart,
             chart_tab: ChartTab::new(),
             state_tab: StateTab::new(remote),
+            action_tx,
+            should_quit: false,
+            in_rerun: false,
         }
     }
 
@@ -92,134 +100,33 @@ impl<T: Transport> App<T> {
         self.current_device_streams.clear();
         log::info!("Cleared chart state due to connection change");
     }
-    fn handle_transport_error(&mut self, err: &dyn std::error::Error) {
+
+    pub fn handle_transport_error(&mut self, err: &(dyn std::error::Error + Send)) {
         let error_msg = err.to_string();
 
         let was_connected = self.connection_status;
+
+        // Check if it's just "no session" vs actual connection problem
+        if error_msg.contains("No active session") || error_msg.contains("502") {
+            // This is expected when no session is running
+            self.connection_status = false;
+
+            if was_connected && !self.has_warned_disconnected {
+                log::info!("No active session running");
+                self.has_warned_disconnected = true;
+            }
+            return;
+        }
+
+        // For other errors, it's a real connection problem
         self.connection_status = false;
 
         if was_connected {
-            if error_msg.contains("502") || error_msg.contains("Bad Gateway") {
-                log::warn!("No active session found. Connection to HTTP server is OK, but no session is running.");
-            } else {
-                log::warn!("Disconnected from server: {}", err);
-            }
+            log::warn!("Lost connection to server: {}", err);
         }
 
         self.has_warned_disconnected = true;
     }
-    pub fn fetch_server_data(&mut self) {
-        match self.transport.send_command("GET_DATASTREAM\n") {
-            Ok(response) => {
-                if !self.connection_status {
-                    log::info!("Reconnected to server");
-                    self.clear_chart_state();
-                    self.connection_status = true;
-                    self.has_warned_disconnected = false;
-                }
-
-                if !response.is_empty() {
-                    if !self.session_running {
-                        log::info!("Session detected as running");
-                        self.session_running = true;
-                    }
-
-                    match serde_json::from_str::<ServerResponse>(&response) {
-                        Ok(server_response) => {
-                            self.devices = server_response
-                                .response
-                                .into_iter()
-                                .sorted_by_key(|(k, _)| k.clone())
-                                .map(|(device_key, device_data)| {
-                                    let streams = device_data
-                                        .measurements
-                                        .into_iter()
-                                        .sorted_by_key(|(k, _)| k.clone())
-                                        .map(|(name, values)| DataStream {
-                                            name,
-                                            points: values
-                                                .into_iter()
-                                                .enumerate()
-                                                .map(|(i, v)| (i as f64, v))
-                                                .collect(),
-                                        })
-                                        .collect();
-                                    Device {
-                                        name: device_key,
-                                        streams,
-                                    }
-                                })
-                                .collect();
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to parse server response: {}", e);
-                        }
-                    }
-                } else {
-                    if self.session_running {
-                        log::info!("Session ended");
-                        self.session_running = false;
-                    }
-                }
-            }
-            Err(e) => {
-                self.handle_transport_error(&*e);
-                self.session_running = false; // If we can't connect, no session is running
-            }
-        }
-    }
-
-    pub fn fetch_state_data(&mut self) {
-        match self.transport.send_command("STATE\n") {
-            Ok(response) => {
-                if !self.connection_status {
-                    log::info!("Reconnected to server");
-                    self.connection_status = true;
-                    self.has_warned_disconnected = false;
-                }
-
-                if !response.is_empty() {
-                    if !self.session_running {
-                        log::info!("Session detected as running");
-                        self.session_running = true;
-                    }
-                    let _ = self.state_tab.update_from_json(&response);
-                } else {
-                    if self.session_running {
-                        log::info!("Session ended");
-                        self.session_running = false;
-                    }
-                }
-            }
-            Err(e) => {
-                self.handle_transport_error(&*e);
-                self.session_running = false;
-            }
-        }
-    }
-
-    pub fn kill_server(&mut self) {
-        let response = self.transport.send_command("KILL\n");
-        log::info!("Kill command response: {:?}", response);
-    }
-
-    pub fn pause_server(&mut self) {
-        let response = self.transport.send_command("PAUSE_STATE\n");
-        log::info!("Pause command response: {:?}", response);
-    }
-
-    pub fn resume_server(&mut self) {
-        let response = self.transport.send_command("RESUME_STATE\n");
-        log::info!("Resume command response: {:?}", response);
-    }
-
-    pub fn disconnect(&mut self) {
-        if let Some(d) = self.transport.disconnect() {
-            log::info!("Disconnected: {:?}", d);
-        }
-        self.connection_status = false;
-    }
-
     pub fn set_x_axis(&mut self) {
         if let Some(device_idx) = self.devices_state.selected() {
             if let Some(stream_idx) = self.streams_state.selected() {
@@ -244,18 +151,6 @@ impl<T: Transport> App<T> {
                 let device = &self.devices[device_idx];
                 let stream = &device.streams[stream_idx];
                 log::info!("Set Y-axis: {} - {}", device.name, stream.name);
-            }
-        }
-    }
-    pub fn on_tick(&mut self) {
-        match self.active_tab {
-            TabView::Chart => {
-                let _ = self.fetch_server_data();
-            }
-            TabView::State => {
-                if self.connection_status {
-                    let _ = self.fetch_state_data();
-                }
             }
         }
     }
@@ -356,11 +251,5 @@ impl<T: Transport> App<T> {
             TabView::Chart => TabView::State,
             TabView::State => TabView::Chart,
         };
-    }
-}
-
-impl<T: Transport> Drop for App<T> {
-    fn drop(&mut self) {
-        self.disconnect();
     }
 }
