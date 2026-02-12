@@ -1,4 +1,4 @@
-## [unreleased]
+## [1.1.0-alpha.1] - 2026-01-17
 
 ### 🚀 Features
 
@@ -7,12 +7,17 @@
 - Improve device data collection handling
 - Added session config view and editing
 - Alpha version of HTTP viewer (WIP)
+- Configuration of sub sampling
+- Removal of openssl
 
 ### 🐛 Bug Fixes
 
 - Added better support for nix on MacOS
 - Updated rex core to handle new TUI feats
 - Better rerun support for local TCP connection
+- Build pineline for python build
+- Updated pyproject.toml to maturin docs
+- Updated deploy ci/cd to deploy to test pypi
 
 ### 💼 Other
 
@@ -20,15 +25,19 @@
 - Updated changelog
 - Improved macos support
 - Updated changelog
+- Removal of openssl in pipeline
 
 ### 🚜 Refactor
 
 - Removal of session results
+- Refactored into single crate, closes #13
+- Refactored tests for new layout
 
 ### ⚙️ Miscellaneous Tasks
 
 - Using cliff.toml for git cliff
 - Start of async refactor for TUI veiwer
+- Version bump
 ## [1.0.0] - 2025-09-15
 
 ### 🐛 Bug Fixes
