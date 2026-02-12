@@ -20,6 +20,8 @@ pub struct FilePicker {
     extensions: Vec<String>,
     title: String,
     max_depth: usize,
+    restricted_mode: bool,
+    remote_mode: bool,
 }
 
 impl FilePicker {
@@ -36,13 +38,41 @@ impl FilePicker {
             extensions,
             title,
             max_depth: 4,
+            restricted_mode: false,
+            remote_mode: false,
         };
         picker.scan_directory();
         picker.update_filtered_files();
         picker
     }
-
+    pub fn new_remote(
+        base_dir: PathBuf,
+        files: Vec<PathBuf>,
+        extensions: Vec<String>,
+        title: String,
+    ) -> Self {
+        let mut picker = FilePicker {
+            current_dir: base_dir,
+            all_files: files,
+            filtered_files: vec![],
+            query: String::new(),
+            cursor_position: 0,
+            selected_index: 0,
+            list_state: ListState::default(),
+            matcher: Matcher::new(Config::DEFAULT),
+            extensions,
+            title,
+            max_depth: 4,
+            restricted_mode: true, // Can't navigate dirs remotely
+            remote_mode: true,
+        };
+        picker.update_filtered_files();
+        picker
+    }
     fn scan_directory(&mut self) {
+        if self.remote_mode {
+            return;
+        }
         self.all_files.clear();
 
         for entry in WalkDir::new(&self.current_dir)
@@ -161,6 +191,9 @@ impl FilePicker {
     }
 
     pub fn navigate_up(&mut self) {
+        if self.restricted_mode {
+            return;
+        }
         if let Some(parent) = self.current_dir.parent() {
             self.current_dir = parent.to_path_buf();
             self.query.clear();
@@ -171,6 +204,9 @@ impl FilePicker {
     }
 
     pub fn navigate_down(&mut self) {
+        if self.restricted_mode {
+            return;
+        }
         if let Some(selected) = self.get_selected() {
             if let Some(parent) = selected.parent() {
                 if parent != self.current_dir && parent.starts_with(&self.current_dir) {

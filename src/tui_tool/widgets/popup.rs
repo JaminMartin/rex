@@ -32,11 +32,9 @@ fn create_controls_widget() -> impl Widget {
         vec![Span::raw("x - Set x-axis stream")],
         vec![Span::raw("y - Set y-axis stream")],
         vec![Span::raw(
-            "e - Toggle edit mode (State tab, when disconnected)",
+            "e - Toggle edit mode (State tab, when not collectin data)",
         )],
-        vec![Span::raw(
-            "l - Load config file (State tab, not yet implemented)",
-        )],
+        vec![Span::raw("l - Load config file")],
         vec![Span::raw("k - Kill script process (end the experiment)")],
         vec![Span::raw("p - Pause the currently running experiment")],
         vec![Span::raw("r - Resume the currently running experiment")],
