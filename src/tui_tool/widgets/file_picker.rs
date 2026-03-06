@@ -1,3 +1,4 @@
+use crate::tui_tool::theme::AppTheme;
 use nucleo_matcher::{Config, Matcher, Utf32String};
 use ratatui::{
     layout::Rect,
@@ -296,7 +297,7 @@ impl FilePicker {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &AppTheme) {
         let popup_area = centered_rect(80, 60, area);
 
         let chunks = ratatui::layout::Layout::default()
@@ -312,9 +313,9 @@ impl FilePicker {
         let after_cursor = &self.query[self.cursor_position..];
 
         let input_text = vec![Line::from(vec![
-            Span::styled(before_cursor, Style::default().fg(Color::Green)),
-            Span::styled("█", Style::default().fg(Color::Yellow)),
-            Span::styled(after_cursor, Style::default().fg(Color::Green)),
+            Span::styled(before_cursor, theme.success()),
+            Span::styled("█", theme.accent()),
+            Span::styled(after_cursor, theme.success()),
         ])];
 
         let input = Paragraph::new(input_text).block(
@@ -324,7 +325,7 @@ impl FilePicker {
                     self.title
                 ))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(theme.active_border()),
         );
 
         f.render_widget(Clear, popup_area);
@@ -349,7 +350,7 @@ impl FilePicker {
                     display
                 };
 
-                ListItem::new(display).style(Style::default().fg(Color::White))
+                ListItem::new(display).style(theme.fg())
             })
             .collect();
 
@@ -358,20 +359,15 @@ impl FilePicker {
                 Block::default()
                     .title(format!("{} matches", self.filtered_files.len()))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow)),
+                    .border_style(theme.active_border()),
             )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(theme.highlight())
             .highlight_symbol(">> ");
 
         f.render_stateful_widget(list, chunks[1], &mut self.list_state);
 
         let current_dir_display = self.current_dir.to_string_lossy().to_string();
-        let status = Paragraph::new(format!("Dir: {}", current_dir_display))
-            .style(Style::default().fg(Color::DarkGray));
+        let status = Paragraph::new(format!("Dir: {}", current_dir_display)).style(theme.muted());
         f.render_widget(status, chunks[2]);
     }
 }

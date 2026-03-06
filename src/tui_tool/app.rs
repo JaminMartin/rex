@@ -1,7 +1,9 @@
+use crate::data_handler::data_mod::get_configuration;
 use crate::data_handler::transport::Transport;
 use crate::data_handler::DeviceData;
 use crate::tui_tool::action::Action;
 use crate::tui_tool::tabs::{chart::ChartTab, state::StateTab};
+use crate::tui_tool::theme::AppTheme;
 
 use ratatui::widgets::ListState;
 use serde::{Deserialize, Serialize};
@@ -53,6 +55,7 @@ pub struct App<T: Transport> {
     pub action_tx: mpsc::UnboundedSender<Action>,
     pub should_quit: bool,
     pub in_rerun: bool,
+    pub theme: AppTheme,
 }
 
 impl<T: Transport> App<T> {
@@ -65,6 +68,14 @@ impl<T: Transport> App<T> {
         } else {
             vec![]
         };
+
+        // Load theme from rex config file, falling back to Dracula
+        let theme = AppTheme::from_config(
+            get_configuration()
+                .ok()
+                .and_then(|cfg| cfg.general.theme)
+                .as_deref(),
+        );
 
         App {
             devices,
@@ -84,6 +95,7 @@ impl<T: Transport> App<T> {
             action_tx,
             should_quit: false,
             in_rerun: false,
+            theme,
         }
     }
 

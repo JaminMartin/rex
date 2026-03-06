@@ -30,6 +30,7 @@ pub struct GeneralConfig {
     pub validations: Option<Vec<String>>,
     pub subsampling: Option<bool>,
     pub allowed_output_dirs: Option<Vec<String>>,
+    pub theme: Option<String>,
 }
 impl Configuration {
     pub fn get_allowed_output_dirs(&self) -> Vec<PathBuf> {

@@ -1,59 +1,58 @@
+use crate::tui_tool::theme::AppTheme;
 use ratatui::{
-    layout::{Alignment, Constraint, Flex, Layout, Rect},
+    layout::{Constraint, Flex, Layout, Rect},
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
-pub fn render_controls_popup(f: &mut Frame, area: Rect) {
-    let popup_area = popup_area(area, 60, 40);
-    let controls = create_controls_widget();
+pub fn render_controls_popup(f: &mut Frame, area: Rect, theme: &AppTheme) {
+    let popup_area = popup_area(area, 60, 50);
+    let controls = create_controls_widget(theme);
 
-    f.render_widget(Clear, popup_area); // Clear background
+    f.render_widget(Clear, popup_area);
     f.render_widget(controls, popup_area);
 }
 
-fn create_controls_widget() -> impl Widget {
-    let control_text = vec![
-        vec![Span::styled(
-            "Navigation:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )],
-        vec![Span::raw("↑/↓ - Navigate devices")],
-        vec![Span::raw("←/→ - Navigate streams")],
-        vec![Span::raw("Tab - Switch between Chart and State tabs")],
-        vec![Span::raw("f - Cycle focus (State tab only)")],
-        vec![Span::raw("")],
-        vec![Span::styled(
-            "Actions:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )],
-        vec![Span::raw("c - Clear Plot")],
-        vec![Span::raw("x - Set x-axis stream")],
-        vec![Span::raw("y - Set y-axis stream")],
-        vec![Span::raw(
-            "e - Toggle edit mode (State tab, when not collecting data)",
-        )],
-        vec![Span::raw("l - Load config file")],
-        vec![Span::raw("n - Start a new run")],
-        vec![Span::raw("k - Kill script process (end the experiment)")],
-        vec![Span::raw("p - Pause the currently running experiment")],
-        vec![Span::raw("r - Resume the currently running experiment")],
-        vec![Span::raw("")],
-        vec![Span::styled(
-            "System:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )],
-        vec![Span::raw("m - Toggle this help menu")],
-        vec![Span::raw("q - Quit Experiment / Exit remote viewer")],
+fn create_controls_widget(theme: &AppTheme) -> impl Widget {
+    let bold = theme.bold();
+
+    let text = vec![
+        Line::from(Span::styled(
+            "Chart Tab Controls",
+            theme.accent().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("Navigation:", bold)),
+        Line::from("↑/↓ - Navigate devices"),
+        Line::from("←/→ - Navigate streams"),
+        Line::from("Tab - Switch between Chart and State tabs"),
+        Line::from("f - Cycle focus (State tab only)"),
+        Line::from(""),
+        Line::from(Span::styled("Actions:", bold)),
+        Line::from("c - Clear Plot"),
+        Line::from("x - Set x-axis stream"),
+        Line::from("y - Set y-axis stream"),
+        Line::from("e - Toggle edit mode (State tab, when not collecting data)"),
+        Line::from("l - Load config file"),
+        Line::from("n - Start a new run"),
+        Line::from("k - Kill script process (end the experiment)"),
+        Line::from("p - Pause the currently running experiment"),
+        Line::from("r - Resume the currently running experiment"),
+        Line::from(""),
+        Line::from(Span::styled("System:", bold)),
+        Line::from("m - Toggle this help menu"),
+        Line::from("q - Quit Experiment / Exit remote viewer"),
     ];
 
-    let text: Vec<Line> = control_text.into_iter().map(Line::from).collect();
-
     Paragraph::new(text)
-        .block(Block::default().title("Controls").borders(Borders::ALL))
-        .style(Style::default().fg(Color::White))
-        .alignment(Alignment::Left)
+        .block(
+            Block::default()
+                .title("Help")
+                .borders(Borders::ALL)
+                .border_style(theme.fg()),
+        )
+        .wrap(Wrap { trim: false })
 }
 
 fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {

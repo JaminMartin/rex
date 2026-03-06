@@ -2,6 +2,7 @@ use crate::data_handler::configurable_dir_path;
 use crate::data_handler::transport::TransportType;
 use crate::data_handler::{SessionInfo, SessionMetadata, Summary};
 
+use crate::tui_tool::theme::AppTheme;
 use crate::tui_tool::widgets::file_picker::FilePicker;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -614,46 +615,46 @@ impl StateTab {
         log::info!("Cancelled edit");
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect, show_popup: bool) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, show_popup: bool, theme: &AppTheme) {
         let vertical_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
-        self.render_session_section(f, vertical_chunks[0]);
+        self.render_session_section(f, vertical_chunks[0], theme);
 
         let device_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
             .split(vertical_chunks[1]);
 
-        self.render_device_list(f, device_chunks[0]);
-        self.render_device_fields(f, device_chunks[1]);
+        self.render_device_list(f, device_chunks[0], theme);
+        self.render_device_fields(f, device_chunks[1], theme);
 
         if let Some(ref mut picker) = self.file_picker {
-            picker.render(f, area);
+            picker.render(f, area, theme);
             return;
         }
 
         if self.editing {
-            self.render_edit_popup(f, area);
+            self.render_edit_popup(f, area, theme);
         }
 
         if self.mode == StateMode::EditingRunArgs {
-            self.render_run_args_popup(f, area);
+            self.render_run_args_popup(f, area, theme);
         }
 
         if show_popup {
-            render_state_help_popup(f, area);
+            render_state_help_popup(f, area, theme);
         }
     }
 
-    fn render_session_section(&mut self, f: &mut Frame, area: Rect) {
+    fn render_session_section(&mut self, f: &mut Frame, area: Rect, theme: &AppTheme) {
         let is_active = self.focus == FocusSection::Session;
         let border_style = if is_active {
-            Style::default().fg(Color::Yellow)
+            theme.active_border()
         } else {
-            Style::default()
+            theme.inactive_border()
         };
 
         let mut title = "Session Info (↑↓ to navigate, e to edit)".to_string();
@@ -672,7 +673,7 @@ impl StateTab {
             .zip(self.session_field_values.iter())
             .map(|(name, value)| {
                 let content = format!("{}: {}", name, value);
-                ListItem::new(content).style(Style::default().fg(Color::Cyan))
+                ListItem::new(content).style(theme.info())
             })
             .collect();
 
@@ -683,28 +684,24 @@ impl StateTab {
                     .borders(Borders::ALL)
                     .border_style(border_style),
             )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(theme.highlight())
             .highlight_symbol(">> ");
 
         f.render_stateful_widget(list, area, &mut self.session_fields_state);
     }
 
-    fn render_device_list(&mut self, f: &mut Frame, area: Rect) {
+    fn render_device_list(&mut self, f: &mut Frame, area: Rect, theme: &AppTheme) {
         let is_active = self.focus == FocusSection::Device;
         let border_style = if is_active {
-            Style::default().fg(Color::Yellow)
+            theme.active_border()
         } else {
-            Style::default()
+            theme.inactive_border()
         };
 
         let items: Vec<ListItem> = self
             .device_names
             .iter()
-            .map(|name| ListItem::new(name.as_str()).style(Style::default().fg(Color::Green)))
+            .map(|name| ListItem::new(name.as_str()).style(theme.success()))
             .collect();
 
         let list = List::new(items)
@@ -714,27 +711,23 @@ impl StateTab {
                     .borders(Borders::ALL)
                     .border_style(border_style),
             )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(theme.highlight())
             .highlight_symbol(">> ");
 
         f.render_stateful_widget(list, area, &mut self.device_list_state);
     }
 
-    fn render_device_fields(&mut self, f: &mut Frame, area: Rect) {
+    fn render_device_fields(&mut self, f: &mut Frame, area: Rect, theme: &AppTheme) {
         let is_active = self.focus == FocusSection::Device;
         let border_style = if is_active {
-            Style::default().fg(Color::Yellow)
+            theme.active_border()
         } else {
-            Style::default()
+            theme.inactive_border()
         };
 
         if self.device_field_names.is_empty() {
             let paragraph = Paragraph::new("Select a device")
-                .style(Style::default().fg(Color::DarkGray))
+                .style(theme.muted())
                 .block(
                     Block::default()
                         .title("Device Config")
@@ -751,7 +744,7 @@ impl StateTab {
             .zip(self.device_field_values.iter())
             .map(|(name, value)| {
                 let content = format!("{}: {}", name, value);
-                ListItem::new(content).style(Style::default().fg(Color::Yellow))
+                ListItem::new(content).style(theme.accent())
             })
             .collect();
 
@@ -762,11 +755,7 @@ impl StateTab {
                     .borders(Borders::ALL)
                     .border_style(border_style),
             )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(theme.highlight())
             .highlight_symbol(">> ");
 
         f.render_stateful_widget(list, area, &mut self.device_fields_state);
@@ -917,7 +906,7 @@ impl StateTab {
             meta_json: None,
         })
     }
-    fn render_edit_popup(&self, f: &mut Frame, area: Rect) {
+    fn render_edit_popup(&self, f: &mut Frame, area: Rect, theme: &AppTheme) {
         let popup_area = centered_rect(60, 20, area);
 
         let before_cursor = &self.edit_buffer[..self.cursor_position];
@@ -925,20 +914,17 @@ impl StateTab {
 
         let text = vec![
             Line::from(vec![
-                Span::styled("Editing: ", Style::default().fg(Color::Cyan)),
-                Span::styled(&self.editing_field_name, Style::default().fg(Color::Yellow)),
+                Span::styled("Editing: ", theme.info()),
+                Span::styled(&self.editing_field_name, theme.accent()),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled(before_cursor, Style::default().fg(Color::Green)),
-                Span::styled("█", Style::default().fg(Color::Yellow)),
-                Span::styled(after_cursor, Style::default().fg(Color::Green)),
+                Span::styled(before_cursor, theme.success()),
+                Span::styled("█", theme.accent()),
+                Span::styled(after_cursor, theme.success()),
             ]),
             Line::from(""),
-            Line::from(Span::styled(
-                "Enter to save | Esc to cancel",
-                Style::default().fg(Color::DarkGray),
-            )),
+            Line::from(Span::styled("Enter to save | Esc to cancel", theme.muted())),
         ];
 
         let paragraph = Paragraph::new(text)
@@ -946,7 +932,7 @@ impl StateTab {
                 Block::default()
                     .title("Edit Value")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow)),
+                    .border_style(theme.active_border()),
             )
             .wrap(Wrap { trim: false });
 
@@ -1093,7 +1079,7 @@ impl StateTab {
         }
         self.mode = StateMode::EditingRunArgs;
     }
-    fn render_run_args_popup(&self, f: &mut Frame, area: Rect) {
+    fn render_run_args_popup(&self, f: &mut Frame, area: Rect, theme: &AppTheme) {
         let editor = match &self.run_args_editor {
             Some(e) => e,
             None => return,
@@ -1104,7 +1090,7 @@ impl StateTab {
         let block = Block::default()
             .title("Run Configuration")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow));
+            .border_style(theme.active_border());
 
         let inner_area = block.inner(popup_area);
         f.render_widget(Clear, popup_area);
@@ -1125,11 +1111,9 @@ impl StateTab {
         let output_focused = matches!(editor.focus_field, RunArgsField::OutputDir);
         let output_indicator = if output_focused { ">> " } else { "   " };
         let output_style = if output_focused {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
+            theme.accent().add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            theme.fg()
         };
 
         let output = Paragraph::new(vec![
@@ -1138,10 +1122,7 @@ impl StateTab {
                 format!("{}{}", output_indicator, editor.temp_output),
                 output_style,
             )),
-            Line::from(Span::styled(
-                "(e to browse)",
-                Style::default().fg(Color::DarkGray),
-            )),
+            Line::from(Span::styled("(e to browse)", theme.muted())),
         ]);
         f.render_widget(output, chunks[0]);
 
@@ -1153,17 +1134,15 @@ impl StateTab {
             let after = &editor.edit_buffer[editor.cursor_position..];
             Line::from(vec![
                 Span::raw(loops_indicator),
-                Span::styled(before, Style::default().fg(Color::Green)),
-                Span::styled("█", Style::default().fg(Color::Yellow)),
-                Span::styled(after, Style::default().fg(Color::Green)),
+                Span::styled(before, theme.success()),
+                Span::styled("█", theme.accent()),
+                Span::styled(after, theme.success()),
             ])
         } else {
             let style = if loops_focused {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                theme.accent().add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                theme.fg()
             };
             Line::from(Span::styled(
                 format!("{}{}", loops_indicator, editor.temp_loops),
@@ -1174,10 +1153,7 @@ impl StateTab {
         let loops = Paragraph::new(vec![
             Line::from("Loops:"),
             loops_value_line,
-            Line::from(Span::styled(
-                "(e to edit)",
-                Style::default().fg(Color::DarkGray),
-            )),
+            Line::from(Span::styled("(e to edit)", theme.muted())),
         ]);
         f.render_widget(loops, chunks[1]);
 
@@ -1189,17 +1165,15 @@ impl StateTab {
             let after = &editor.edit_buffer[editor.cursor_position..];
             Line::from(vec![
                 Span::raw(delay_indicator),
-                Span::styled(before, Style::default().fg(Color::Green)),
-                Span::styled("█", Style::default().fg(Color::Yellow)),
-                Span::styled(after, Style::default().fg(Color::Green)),
+                Span::styled(before, theme.success()),
+                Span::styled("█", theme.accent()),
+                Span::styled(after, theme.success()),
             ])
         } else {
             let style = if delay_focused {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                theme.accent().add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                theme.fg()
             };
             Line::from(Span::styled(
                 format!("{}{}", delay_indicator, editor.temp_delay),
@@ -1210,21 +1184,16 @@ impl StateTab {
         let delay = Paragraph::new(vec![
             Line::from("Delay (seconds):"),
             delay_value_line,
-            Line::from(Span::styled(
-                "(e to edit)",
-                Style::default().fg(Color::DarkGray),
-            )),
+            Line::from(Span::styled("(e to edit)", theme.muted())),
         ]);
         f.render_widget(delay, chunks[2]);
 
         let dry_run_focused = matches!(editor.focus_field, RunArgsField::DryRun);
         let dry_run_indicator = if dry_run_focused { ">> " } else { "   " };
         let dry_run_style = if dry_run_focused {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
+            theme.accent().add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            theme.fg()
         };
 
         let dry_run = Paragraph::new(vec![
@@ -1238,16 +1207,13 @@ impl StateTab {
                 ),
                 dry_run_style,
             )),
-            Line::from(Span::styled(
-                "(e to toggle)",
-                Style::default().fg(Color::DarkGray),
-            )),
+            Line::from(Span::styled("(e to toggle)", theme.muted())),
         ]);
         f.render_widget(dry_run, chunks[3]);
 
         // Help text
-        let help = Paragraph::new("↑↓ Navigate  e Edit  Enter Confirm  Esc Cancel")
-            .style(Style::default().fg(Color::DarkGray));
+        let help =
+            Paragraph::new("↑↓ Navigate  e Edit  Enter Confirm  Esc Cancel").style(theme.muted());
         f.render_widget(help, chunks[5]);
     }
 }
@@ -1297,61 +1263,41 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn render_state_help_popup(f: &mut Frame, area: Rect) {
+fn render_state_help_popup(f: &mut Frame, area: Rect, theme: &AppTheme) {
     let popup_area = centered_rect(60, 60, area);
 
     let text = vec![
         Line::from(Span::styled(
             "State Tab Controls",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            theme.accent().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            "Navigation:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Navigation:", theme.bold())),
         Line::from("f - Toggle between Session/Device sections"),
         Line::from("↑/↓ - Navigate session fields OR devices"),
         Line::from("←/→ - Navigate device config fields"),
         Line::from(""),
-        Line::from(Span::styled(
-            "File Management:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("File Management:", theme.bold())),
         Line::from("l - Load config and script files"),
         Line::from("    TCP: browse local files"),
         Line::from("    HTTP: browse server's registered scripts"),
         Line::from(""),
-        Line::from(Span::styled(
-            "Running:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Running:", theme.bold())),
         Line::from("n - Start new run with current config"),
         Line::from("    TCP: runs locally with loaded script"),
         Line::from("    HTTP: dispatches to server via /run endpoint"),
         Line::from(""),
-        Line::from(Span::styled(
-            "Editing (when disconnected):",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Editing (when disconnected):", theme.bold())),
         Line::from("e - Edit selected field"),
         Line::from("Enter - Save changes"),
         Line::from("Esc - Cancel edit"),
         Line::from(""),
-        Line::from(Span::styled(
-            "Server Control:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("Server Control:", theme.bold())),
         Line::from("k - Kill server"),
         Line::from("p - Pause server"),
         Line::from("r - Resume server"),
         Line::from(""),
-        Line::from(Span::styled(
-            "General:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
+        Line::from(Span::styled("General:", theme.bold())),
         Line::from("Tab - Switch between Chart/State tabs"),
         Line::from("m - Toggle this help"),
         Line::from("q - Quit"),
@@ -1362,7 +1308,7 @@ fn render_state_help_popup(f: &mut Frame, area: Rect) {
             Block::default()
                 .title("Help")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::White)),
+                .border_style(theme.fg()),
         )
         .wrap(Wrap { trim: false });
 

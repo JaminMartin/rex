@@ -75,6 +75,7 @@ Alternatively, you can embed this in a Python project, as Python bindings are ex
 [general]
 port = "7676"
 interpreter = "/usr/bin/python3"
+theme = "dracula" # Optional. See "TUI Theming" for all available themes.
 ```
 
 2. **Write an experiment script** using [rex_utils](https://github.com/JaminMartin/rex_utils) — it provides ready-made `Session`, `Device`, `Listener`, and `Result` classes for communicating with the rex TCP server. See the [examples](https://github.com/JaminMartin/rex_utils/tree/main/examples) directory for complete working scripts.
@@ -127,6 +128,8 @@ validations = ["some_key", "some_other_key"] # Optional. Ensures these keys exis
 subsampling = true # Optional (default: true). Enables LTTB (Largest Triangle Three Buckets) downsampling for data streams in the TUI and /datastream endpoint. Set to false to receive the raw last 100 data points instead.
 
 allowed_output_dirs = ["/path/to/allowed/dir1", "/path/to/allowed/dir2"] # Optional. Restricts where output files can be written. If omitted, defaults to the current working directory and home directory. Primarily useful when running `rex serve` to constrain remote callers.
+
+theme = "dracula" # Optional (default: "dracula"). Color theme for the TUI. See "TUI Theming" below for all available themes.
 
 [email_server]
 security = true # If set to true, you must provide a username and password.
@@ -432,6 +435,39 @@ The TUI allows you to start new sessions without leaving the interface:
 3. Press `n` to start a new run. A popup lets you configure output directory, loop count, delay, and dry-run mode before confirming.
 
 When connected via TCP the new run is spawned locally. When connected via HTTP the run is dispatched to the `rex serve` instance via the `/run` endpoint.
+
+### TUI Theming
+
+The TUI supports configurable color themes via the [`ratatui-themes`](https://crates.io/crates/ratatui-themes) crate. Set the `theme` field in `[general]` of your `config.toml`:
+
+```toml
+[general]
+theme = "tokyo-night"
+```
+
+If omitted, the default theme is **Dracula**. Theme names are specified in kebab-case.
+
+#### Available themes
+
+| Theme | Type | Config value |
+|-------|------|-------------|
+| Dracula | Dark | `dracula` |
+| One Dark Pro | Dark | `one-dark-pro` |
+| Nord | Dark | `nord` |
+| Catppuccin Mocha | Dark | `catppuccin-mocha` |
+| Catppuccin Latte | Light | `catppuccin-latte` |
+| Gruvbox Dark | Dark | `gruvbox-dark` |
+| Gruvbox Light | Light | `gruvbox-light` |
+| Tokyo Night | Dark | `tokyo-night` |
+| Solarized Dark | Dark | `solarized-dark` |
+| Solarized Light | Light | `solarized-light` |
+| Monokai Pro | Dark | `monokai-pro` |
+| Rosé Pine | Dark | `rose-pine` |
+| Kanagawa | Dark | `kanagawa` |
+| Everforest | Dark | `everforest` |
+| Cyberpunk | Dark | `cyberpunk` |
+
+Each theme provides a consistent semantic color palette (accent, info, success, warning, error, muted, etc.) that is applied across the entire TUI — tabs, borders, lists, popups, chart data, and log output all adapt automatically.
 
 ## Scripts directory
 

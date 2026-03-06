@@ -1,5 +1,6 @@
 use crate::data_handler::transport::Transport;
 use crate::tui_tool::app::App;
+use crate::tui_tool::theme::AppTheme;
 use crate::tui_tool::widgets::popup;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -36,14 +37,15 @@ pub fn render_chart_tab<T: Transport>(f: &mut Frame, app: &mut App<T>, area: Rec
     render_chart(f, app, chunks[0]);
     render_device_list(f, app, lists_chunk[0]);
     render_stream_list(f, app, lists_chunk[1]);
-    render_log(f, chunks[2]);
+    render_log(f, chunks[2], &app.theme);
 
     if app.show_popup {
-        popup::render_controls_popup(f, area);
+        popup::render_controls_popup(f, area, &app.theme);
     }
 }
 
 fn render_chart<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
+    let theme = &app.theme;
     if let (Some(x_ref), Some(y_ref)) = (&app.x_axis_stream, &app.y_axis_stream) {
         let x_stream = &app.devices[x_ref.device_index].streams[x_ref.stream_index];
         let y_stream = &app.devices[y_ref.device_index].streams[y_ref.stream_index];
@@ -59,7 +61,7 @@ fn render_chart<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
             let datasets = vec![Dataset::default()
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
-                .style(Style::default().fg(Color::Cyan))
+                .style(theme.info())
                 .data(&points)];
 
             let x_values: Vec<f64> = points.iter().map(|(x, _)| *x).collect();
@@ -76,14 +78,14 @@ fn render_chart<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
             let x_labels: Vec<Span> = (0..=4)
                 .map(|i| {
                     let val = x_min + (i as f64) * (x_max - x_min) / 4.0;
-                    Span::styled(format_axis(val), Style::default().fg(Color::White))
+                    Span::styled(format_axis(val), theme.fg())
                 })
                 .collect();
 
             let y_labels: Vec<Span> = (0..=4)
                 .map(|i| {
                     let val = y_min + (i as f64) * (y_max - y_min) / 4.0;
-                    Span::styled(format_axis(val), Style::default().fg(Color::White))
+                    Span::styled(format_axis(val), theme.fg())
                 })
                 .collect();
 
@@ -117,6 +119,7 @@ fn render_chart<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
 }
 
 fn render_device_list<T: Transport>(f: &mut Frame, app: &mut App<T>, area: Rect) {
+    let theme = &app.theme;
     let devices: Vec<ListItem> = app
         .devices
         .iter()
@@ -132,8 +135,7 @@ fn render_device_list<T: Transport>(f: &mut Frame, app: &mut App<T>, area: Rect)
                 (_, Some(y_ref)) if y_ref.device_index == idx => "Y",
                 _ => " ",
             };
-            ListItem::new(format!("[{}] {}", prefix, device.name))
-                .style(Style::default().fg(Color::Green))
+            ListItem::new(format!("[{}] {}", prefix, device.name)).style(theme.success())
         })
         .collect();
 
@@ -143,17 +145,14 @@ fn render_device_list<T: Transport>(f: &mut Frame, app: &mut App<T>, area: Rect)
                 .title("Connected Devices (↑↓ to navigate)")
                 .borders(Borders::ALL),
         )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(theme.highlight())
         .highlight_symbol(">> ");
 
     f.render_stateful_widget(devices_list, area, &mut app.devices_state);
 }
 
 fn render_stream_list<T: Transport>(f: &mut Frame, app: &mut App<T>, area: Rect) {
+    let theme = &app.theme;
     if let Some(device_idx) = app.devices_state.selected() {
         let device = &app.devices[device_idx];
         let streams: Vec<ListItem> = device
@@ -182,8 +181,7 @@ fn render_stream_list<T: Transport>(f: &mut Frame, app: &mut App<T>, area: Rect)
                     }
                     _ => " ",
                 };
-                ListItem::new(format!("[{}] {}", prefix, stream.name))
-                    .style(Style::default().fg(Color::Yellow))
+                ListItem::new(format!("[{}] {}", prefix, stream.name)).style(theme.accent())
             })
             .collect();
 
@@ -193,24 +191,20 @@ fn render_stream_list<T: Transport>(f: &mut Frame, app: &mut App<T>, area: Rect)
                     .title("Data Streams (←→ to navigate, x/y to set axes)")
                     .borders(Borders::ALL),
             )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(theme.highlight())
             .highlight_symbol(">> ");
 
         f.render_stateful_widget(streams_list, area, &mut app.streams_state);
     }
 }
 
-fn render_log(f: &mut Frame, area: Rect) {
+fn render_log(f: &mut Frame, area: Rect, theme: &AppTheme) {
     let tui_logger = TuiLoggerWidget::default()
-        .style_error(Style::default().fg(Color::Red))
-        .style_debug(Style::default().fg(Color::Green))
-        .style_warn(Style::default().fg(Color::Yellow))
-        .style_trace(Style::default().fg(Color::Magenta))
-        .style_info(Style::default().fg(Color::Cyan))
+        .style_error(theme.error())
+        .style_debug(theme.success())
+        .style_warn(theme.warning())
+        .style_trace(theme.secondary())
+        .style_info(theme.info())
         .block(Block::default().title("System Log").borders(Borders::ALL));
 
     f.render_widget(tui_logger, area);

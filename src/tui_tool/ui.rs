@@ -86,13 +86,17 @@ pub fn ui<T: Transport>(f: &mut Frame, app: &mut App<T>) {
 
     render_tab_bar(f, app, main_chunks[0]);
 
+    let theme = app.theme;
     match app.active_tab {
         TabView::Chart => chart::render_chart_tab(f, app, main_chunks[1]),
-        TabView::State => app.state_tab.render(f, main_chunks[1], app.show_popup),
+        TabView::State => app
+            .state_tab
+            .render(f, main_chunks[1], app.show_popup, &theme),
     }
 }
 
 fn render_tab_bar<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
+    let theme = &app.theme;
     let tab_titles = vec!["Data", "Session Info"];
     let tabs: Vec<Line> = tab_titles
         .iter()
@@ -104,11 +108,9 @@ fn render_tab_bar<T: Transport>(f: &mut Frame, app: &App<T>, area: Rect) {
                 _ => false,
             };
             let style = if is_active {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                theme.accent_bold()
             } else {
-                Style::default().fg(Color::DarkGray)
+                theme.muted()
             };
             Line::from(vec![
                 Span::raw("  "),
