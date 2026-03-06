@@ -1,4 +1,4 @@
-use crate::data_handler::transport::{Transport, TransportType};
+use crate::data_handler::transport::Transport;
 use crate::tui_tool::action::Action;
 use crate::tui_tool::app::{App, TabView};
 use crate::tui_tool::tabs::state::StateMode;
@@ -10,16 +10,39 @@ pub fn handle_key_event<T: Transport>(app: &App<T>, event: KeyEvent) -> Vec<Acti
 
     match app.active_tab {
         TabView::State => {
-            // File picker mode
             if matches!(
                 app.state_tab.mode,
-                StateMode::PickingConfig | StateMode::PickingScript
+                StateMode::PickingConfig | StateMode::PickingScript | StateMode::PickingOutputDir
             ) {
                 actions.push(Action::StateFilePickerKey(key));
                 return actions;
             }
 
-            // Editing mode
+            if app.state_tab.mode == StateMode::EditingRunArgs {
+                if let Some(ref editor) = app.state_tab.run_args_editor {
+                    if editor.editing {
+                        match key {
+                            KeyCode::Char(c) => actions.push(Action::StateRunArgsEditInput(c)),
+                            KeyCode::Backspace => actions.push(Action::StateRunArgsEditBackspace),
+                            KeyCode::Delete => actions.push(Action::StateRunArgsEditDelete),
+                            KeyCode::Enter => actions.push(Action::StateRunArgsCommitEdit),
+                            KeyCode::Esc => actions.push(Action::StateRunArgsCancelEdit),
+                            _ => {}
+                        }
+                    } else {
+                        match key {
+                            KeyCode::Up => actions.push(Action::StateRunArgsPreviousField),
+                            KeyCode::Down => actions.push(Action::StateRunArgsNextField),
+                            KeyCode::Char('e') => actions.push(Action::StateRunArgsEditCurrent),
+                            KeyCode::Enter => actions.push(Action::StateRunArgsConfirm),
+                            KeyCode::Esc => actions.push(Action::StateRunArgsCancel),
+                            _ => {}
+                        }
+                    }
+                }
+                return actions;
+            }
+
             if app.state_tab.editing {
                 match key {
                     KeyCode::Char(c) => actions.push(Action::StateEditInput(c)),
@@ -50,17 +73,14 @@ pub fn handle_key_event<T: Transport>(app: &App<T>, event: KeyEvent) -> Vec<Acti
         KeyCode::Char('m') => {
             actions.push(Action::TogglePopup);
         }
-        _ => {
-            // Tab-specific keys
-            match app.active_tab {
-                TabView::Chart => {
-                    actions.extend(handle_chart_keys(key));
-                }
-                TabView::State => {
-                    actions.extend(handle_state_keys(key, app));
-                }
+        _ => match app.active_tab {
+            TabView::Chart => {
+                actions.extend(handle_chart_keys(key));
             }
-        }
+            TabView::State => {
+                actions.extend(handle_state_keys(key, app));
+            }
+        },
     }
 
     actions
@@ -97,39 +117,17 @@ fn handle_state_keys<T: Transport>(key: KeyCode, app: &App<T>) -> Vec<Action> {
         KeyCode::Left => actions.push(Action::StatePreviousSecondary),
         KeyCode::Char('f') => actions.push(Action::StateToggleFocus),
         KeyCode::Char('e') => {
-            match (
-                app.session_running,
-                app.state_tab.remote,
-                app.transport.transport_type(),
-            ) {
-                (true, _, _) => {
-                    log::warn!("Cannot edit while a session is running");
-                }
-                (false, true, TransportType::Tcp) => {
-                    actions.push(Action::StateStartEdit);
-                    log::warn!("Remote TCP is view-only - editing not allowed");
-                }
-                (false, _, _) => {
-                    actions.push(Action::StateStartEdit);
-                }
+            if app.session_running {
+                log::warn!("Cannot edit while a session is running");
+            } else {
+                actions.push(Action::StateStartEdit);
             }
         }
         KeyCode::Char('l') => {
-            match (
-                app.session_running,
-                app.state_tab.remote,
-                app.transport.transport_type(),
-            ) {
-                (true, _, _) => {
-                    log::warn!("Cannot load files while a session is running");
-                }
-                (false, true, TransportType::Tcp) => {
-                    actions.push(Action::StateStartConfigPicker);
-                    log::warn!("Remote TCP is view-only - cannot load files");
-                }
-                (false, _, _) => {
-                    actions.push(Action::StateStartConfigPicker);
-                }
+            if app.session_running {
+                log::warn!("Cannot load files while a session is running");
+            } else {
+                actions.push(Action::StateStartConfigPicker);
             }
         }
         KeyCode::Char('n') => actions.push(Action::StartNewRun),

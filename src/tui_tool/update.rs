@@ -2,8 +2,9 @@ use crate::data_handler::transport::{Transport, TransportType};
 use crate::tui_tool::action::Action;
 use crate::tui_tool::app::{App, ServerResponse, TabView};
 use crate::tui_tool::tabs::state::StateMode;
+use crate::tui_tool::widgets::file_picker::FilePicker; // ADD THIS
 use itertools::Itertools;
-
+use std::path::PathBuf;
 pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: Action) {
     match action {
         Action::Tick => {
@@ -30,7 +31,6 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
             app.session_running = false;
         }
 
-        // Chart actions
         Action::NextDevice => app.next_device(),
         Action::PreviousDevice => app.previous_device(),
         Action::NextStream => app.next_stream(),
@@ -61,33 +61,68 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
         Action::StateMoveCursorEnd => app.state_tab.move_cursor_end(),
 
         Action::StateStartConfigPicker => app.state_tab.start_config_picker(),
-        Action::StateFilePickerKey(key) => {
-            let needs_remote_fetch = app
-                .state_tab
-                .handle_file_picker_key(key, app.transport.transport_type());
 
-            if needs_remote_fetch {
-                let tx = app.action_tx.clone();
-                let mut transport = app.transport.clone();
+        Action::StateFilePickerKey(key) => match app.state_tab.mode {
+            StateMode::PickingConfig => {
+                let needs_remote_fetch = app
+                    .state_tab
+                    .handle_file_picker_key(key, app.transport.transport_type());
 
-                tokio::spawn(async move {
-                    if let Some(http) = transport
-                        .as_any_mut()
-                        .downcast_mut::<crate::server::http_transport::HTTPTransport>(
-                    ) {
-                        match http.get_allowed_scripts().await {
-                            Ok((base_dir, files)) => {
-                                let _ =
-                                    tx.send(Action::RemoteScriptsFetched(Ok((base_dir, files))));
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Action::RemoteScriptsFetched(Err(e.to_string())));
+                if needs_remote_fetch {
+                    let tx = app.action_tx.clone();
+                    let mut transport = app.transport.clone();
+
+                    tokio::spawn(async move {
+                        if let Some(http) = transport
+                            .as_any_mut()
+                            .downcast_mut::<crate::server::http_transport::HTTPTransport>(
+                        ) {
+                            match http.get_allowed_scripts().await {
+                                Ok((base_dir, files)) => {
+                                    let _ = tx
+                                        .send(Action::RemoteScriptsFetched(Ok((base_dir, files))));
+                                }
+                                Err(e) => {
+                                    let _ =
+                                        tx.send(Action::RemoteScriptsFetched(Err(e.to_string())));
+                                }
                             }
                         }
-                    }
-                });
+                    });
+                }
             }
-        }
+            StateMode::PickingScript => {
+                let _ = app
+                    .state_tab
+                    .handle_file_picker_key(key, app.transport.transport_type());
+            }
+            StateMode::PickingOutputDir => {
+                if let Some(ref mut picker) = app.state_tab.file_picker {
+                    match key {
+                        crossterm::event::KeyCode::Enter => {
+                            if let Some(selected) = picker.get_selected() {
+                                app.state_tab.set_output_dir(selected);
+                                app.state_tab.file_picker = None;
+                            }
+                        }
+                        crossterm::event::KeyCode::Esc => {
+                            app.state_tab.file_picker = None;
+                            app.state_tab.mode = StateMode::EditingRunArgs;
+                        }
+                        _ => {
+                            let _ = app
+                                .state_tab
+                                .handle_file_picker_key(key, app.transport.transport_type());
+                        }
+                    }
+                }
+            }
+            _ => {
+                let _ = app
+                    .state_tab
+                    .handle_file_picker_key(key, app.transport.transport_type());
+            }
+        },
 
         Action::RemoteScriptsFetched(Ok((base_dir, files))) => {
             log::info!("Received {} scripts from server", files.len());
@@ -99,12 +134,139 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
             app.state_tab.mode = StateMode::Normal;
             app.state_tab.file_picker = None;
         }
-        // General actions
+
+        Action::StateStartRunArgsEditor => {
+            app.state_tab.start_run_args_editor();
+        }
+
+        Action::StateRunArgsNextField => {
+            app.state_tab.run_args_next_field();
+        }
+
+        Action::StateRunArgsPreviousField => {
+            app.state_tab.run_args_previous_field();
+        }
+
+        Action::StateRunArgsEditCurrent => {
+            let needs_dir_fetch = app.state_tab.run_args_edit_current();
+
+            if needs_dir_fetch {
+                let transport_type = app.transport.transport_type();
+
+                if transport_type == TransportType::Http {
+                    let tx = app.action_tx.clone();
+                    let mut transport = app.transport.clone();
+
+                    tokio::spawn(async move {
+                        if let Some(http) = transport
+                            .as_any_mut()
+                            .downcast_mut::<crate::server::http_transport::HTTPTransport>(
+                        ) {
+                            match http.get_allowed_output_dirs().await {
+                                Ok(dirs) => {
+                                    let _ = tx.send(Action::OutputDirFetched(Ok(dirs)));
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Action::OutputDirFetched(Err(e.to_string())));
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+
+                    app.state_tab.file_picker = Some(FilePicker::new_dir_only(
+                        start_dir,
+                        "Select Output Directory".to_string(),
+                    ));
+                    app.state_tab.mode = StateMode::PickingOutputDir;
+                }
+            }
+        }
+
+        Action::StateRunArgsEditInput(c) => {
+            app.state_tab.run_args_edit_input(c);
+        }
+
+        Action::StateRunArgsEditBackspace => {
+            app.state_tab.run_args_edit_backspace();
+        }
+
+        Action::StateRunArgsEditDelete => {
+            app.state_tab.run_args_edit_delete();
+        }
+
+        Action::StateRunArgsCommitEdit => {
+            app.state_tab.run_args_commit_edit();
+        }
+
+        Action::StateRunArgsCancelEdit => {
+            app.state_tab.run_args_cancel_edit();
+        }
+
+        Action::StateRunArgsConfirm => {
+            app.state_tab.run_args_confirm();
+            handle_start_new_run(app);
+        }
+
+        Action::StateRunArgsCancel => {
+            app.state_tab.run_args_cancel();
+        }
+
+        Action::OutputDirFetched(Ok(dirs)) => {
+            log::info!("Received {} allowed output dirs from server", dirs.len());
+            if dirs.is_empty() {
+                log::error!("No allowed output directories configured on server");
+                app.state_tab.mode = StateMode::EditingRunArgs;
+                return;
+            }
+            let first_dir = dirs.first().unwrap().clone();
+
+            app.state_tab.file_picker = Some(FilePicker::new_remote_dirs(
+                first_dir,
+                dirs,
+                "Select Output Directory".to_string(),
+            ));
+            app.state_tab.mode = StateMode::PickingOutputDir;
+        }
+
+        Action::OutputDirFetched(Err(e)) => {
+            log::error!("Failed to fetch allowed output dirs: {}", e);
+            app.state_tab.mode = StateMode::EditingRunArgs;
+        }
+
         Action::SwitchTab => app.switch_tab(),
         Action::TogglePopup => app.show_popup = !app.show_popup,
 
         Action::StartNewRun => {
-            handle_start_new_run(app);
+            if app.session_running {
+                log::warn!(
+                    "A session is already running. Press 'k' to kill it first, then 'n' to start new run."
+                );
+                return;
+            }
+
+            match app.transport.transport_type() {
+                TransportType::Http | TransportType::Ws => {
+                    if app.state_tab.loaded_script_path.is_none()
+                        && app.state_tab.server_script_path.is_none()
+                    {
+                        log::warn!("Cannot start new run: No script available.");
+                        log::info!("Press 'l' to load a config and script file.");
+                        return;
+                    }
+                }
+                TransportType::Tcp => {
+                    if !app.state_tab.can_rerun() {
+                        log::warn!(
+                            "Cannot start new run: No config loaded. Press 'l' to load files first."
+                        );
+                        return;
+                    }
+                }
+            }
+
+            app.state_tab.start_run_args_editor();
         }
 
         Action::NewRunStarted(Ok(())) => {
@@ -120,6 +282,7 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
             log::error!("Failed to start new session: {}", e);
             app.in_rerun = false
         }
+
         Action::KillServer => {
             let mut transport = app.transport.clone();
             tokio::spawn(async move {
@@ -140,6 +303,7 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
                 resume_server(&mut transport).await;
             });
         }
+
         Action::Quit => {
             log::info!("Quit requested");
             let mut transport = app.transport.clone();
@@ -183,7 +347,6 @@ fn handle_tick<T: Transport + Clone + Send + 'static>(app: &mut App<T>) {
                         let _ = tx.send(Action::ServerDataFetched(Ok(response)));
                     }
                     Err(e) => {
-                        // Send error, not empty string
                         let _ = tx.send(Action::ServerDataFetched(Err(e.to_string())));
                     }
                 }
@@ -211,7 +374,7 @@ fn handle_tick<T: Transport + Clone + Send + 'static>(app: &mut App<T>) {
 fn handle_server_data_fetched<T: Transport>(app: &mut App<T>, response: String) {
     if !app.connection_status {
         log::info!("Session started - clearing chart state");
-        app.clear_chart_state(); // Clear state on reconnection
+        app.clear_chart_state();
         app.connection_status = true;
         app.has_warned_disconnected = false;
     }
@@ -305,28 +468,6 @@ async fn resume_server<T: Transport>(transport: &mut T) {
 }
 
 fn handle_start_new_run<T: Transport + Clone + Send + 'static>(app: &mut App<T>) {
-    if app.session_running {
-        log::warn!(
-            "A session is already running. Press 'k' to kill it first, then 'n' to start new run."
-        );
-        return;
-    }
-
-    if app.state_tab.remote && app.transport.transport_type() == TransportType::Http {
-        if app.state_tab.loaded_script_path.is_none() && app.state_tab.server_script_path.is_none()
-        {
-            log::warn!("Cannot start new run: No script available.");
-            log::info!("Press 'l' to load a config and script file.");
-            return;
-        }
-    }
-
-    if !app.state_tab.remote && !app.state_tab.can_rerun() {
-        log::warn!("Cannot start new run: No config loaded. Press 'l' to load files first.");
-        return;
-    }
-
-    // Build run args
     let run_args_result = match app.transport.transport_type() {
         TransportType::Http | TransportType::Ws => app.state_tab.build_http_run_args(),
         TransportType::Tcp => app.state_tab.build_run_args(),

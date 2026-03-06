@@ -18,6 +18,44 @@ use std::thread::JoinHandle;
 use tokio::sync::broadcast;
 use toml::Value;
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RunArgsField {
+    OutputDir,
+    Loops,
+    Delay,
+    DryRun,
+}
+
+impl RunArgsField {
+    pub fn next(&self) -> Self {
+        match self {
+            RunArgsField::OutputDir => RunArgsField::Loops,
+            RunArgsField::Loops => RunArgsField::Delay,
+            RunArgsField::Delay => RunArgsField::DryRun,
+            RunArgsField::DryRun => RunArgsField::OutputDir,
+        }
+    }
+
+    pub fn previous(&self) -> Self {
+        match self {
+            RunArgsField::OutputDir => RunArgsField::DryRun,
+            RunArgsField::Loops => RunArgsField::OutputDir,
+            RunArgsField::Delay => RunArgsField::Loops,
+            RunArgsField::DryRun => RunArgsField::Delay,
+        }
+    }
+}
+
+pub struct RunArgsEditor {
+    pub focus_field: RunArgsField,
+    pub editing: bool,
+    pub edit_buffer: String,
+    pub cursor_position: usize,
+    pub temp_output: String,
+    pub temp_loops: u8,
+    pub temp_delay: u64,
+    pub temp_dry_run: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FocusSection {
     Session,
     Device,
@@ -28,6 +66,8 @@ pub enum StateMode {
     PickingConfig,
     PickingScript,
     FetchingScripts,
+    PickingOutputDir,
+    EditingRunArgs,
 }
 #[derive(Debug, Deserialize)]
 struct Config {
@@ -71,6 +111,11 @@ pub struct StateTab {
     pub rerun_handle: Option<JoinHandle<()>>,
     pub rerun_shutdown_tx: Option<broadcast::Sender<()>>,
     pub rerun_shutting_down: Option<Arc<AtomicBool>>,
+    pub run_args_output: String,
+    pub run_args_loops: u8,
+    pub run_args_delay: u64,
+    pub run_args_dry_run: bool,
+    pub run_args_editor: Option<RunArgsEditor>,
 }
 
 impl StateTab {
@@ -83,7 +128,30 @@ impl StateTab {
 
         let mut device_fields_state = ListState::default();
         device_fields_state.select(None);
-
+        let default_output = if remote {
+            if let Ok(config) = crate::data_handler::get_configuration() {
+                let allowed_dirs = config.get_allowed_output_dirs();
+                allowed_dirs
+                    .first()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| {
+                        std::env::current_dir()
+                            .unwrap_or_else(|_| PathBuf::from("."))
+                            .to_string_lossy()
+                            .to_string()
+                    })
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .to_string_lossy()
+                    .to_string()
+            }
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .to_string_lossy()
+                .to_string()
+        };
         StateTab {
             session_info: None,
             device_configs: HashMap::new(),
@@ -110,6 +178,12 @@ impl StateTab {
             rerun_handle: None,
             rerun_shutdown_tx: None,
             rerun_shutting_down: None,
+
+            run_args_output: default_output,
+            run_args_loops: 1,
+            run_args_delay: 0,
+            run_args_dry_run: false,
+            run_args_editor: None,
         }
     }
     pub fn set_remote_scripts(&mut self, base_dir: PathBuf, files: Vec<PathBuf>) {
@@ -565,6 +639,10 @@ impl StateTab {
             self.render_edit_popup(f, area);
         }
 
+        if self.mode == StateMode::EditingRunArgs {
+            self.render_run_args_popup(f, area);
+        }
+
         if show_popup {
             render_state_help_popup(f, area);
         }
@@ -770,21 +848,14 @@ impl StateTab {
         let temp_config = self.save_config_to_temp_file()?;
         let script_path = self.get_script_path().ok_or("No script file available")?;
 
-        let output_dir = self
-            .loaded_config_path
-            .as_ref()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
         Ok(crate::cli_tool::RunArgs {
             path: script_path,
             config: Some(temp_config.to_string_lossy().to_string()),
-            output: output_dir.to_string_lossy().to_string(),
-            dry_run: false,
+            output: self.run_args_output.clone(),
+            dry_run: self.run_args_dry_run,
             email: None,
-            delay: 0,
-            loops: 1,
+            delay: self.run_args_delay,
+            loops: self.run_args_loops,
             interactive: false,
             port: None,
             meta_json: None,
@@ -826,27 +897,21 @@ impl StateTab {
         let script_path = self.get_script_path().ok_or("No script file available")?;
         let config_json = self.build_config_json()?;
 
-        let output_dir = self
-            .loaded_config_path
-            .as_ref()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
         let allowed_dir = get_allowed_scripts_dir()
             .map_err(|e| format!("Cannot verify script location: {}", e))?;
 
         if !script_path.starts_with(&allowed_dir) {
             return Err("Script must be from allowed scripts directory".into());
         }
+
         Ok(crate::cli_tool::RunArgs {
             path: script_path,
-            config: Some(config_json), // This is now JSON, not a file path
-            output: output_dir.to_string_lossy().to_string(),
-            dry_run: false,
+            config: Some(config_json),
+            output: self.run_args_output.clone(),
+            dry_run: self.run_args_dry_run,
             email: None,
-            delay: 0,
-            loops: 1,
+            delay: self.run_args_delay,
+            loops: self.run_args_loops,
             interactive: false,
             port: None,
             meta_json: None,
@@ -887,6 +952,303 @@ impl StateTab {
 
         f.render_widget(Clear, popup_area);
         f.render_widget(paragraph, popup_area);
+    }
+    pub fn start_run_args_editor(&mut self) {
+        self.run_args_editor = Some(RunArgsEditor {
+            focus_field: RunArgsField::OutputDir,
+            editing: false,
+            edit_buffer: String::new(),
+            cursor_position: 0,
+            temp_output: self.run_args_output.clone(),
+            temp_loops: self.run_args_loops,
+            temp_delay: self.run_args_delay,
+            temp_dry_run: self.run_args_dry_run,
+        });
+        self.mode = StateMode::EditingRunArgs;
+        log::info!("Opened run args editor");
+    }
+
+    pub fn run_args_next_field(&mut self) {
+        if let Some(ref mut editor) = self.run_args_editor {
+            editor.focus_field = editor.focus_field.next();
+        }
+    }
+
+    pub fn run_args_previous_field(&mut self) {
+        if let Some(ref mut editor) = self.run_args_editor {
+            editor.focus_field = editor.focus_field.previous();
+        }
+    }
+
+    pub fn run_args_edit_current(&mut self) -> bool {
+        if let Some(ref mut editor) = self.run_args_editor {
+            match editor.focus_field {
+                RunArgsField::OutputDir => {
+                    self.mode = StateMode::PickingOutputDir;
+
+                    return true;
+                }
+                RunArgsField::Loops => {
+                    editor.editing = true;
+                    editor.edit_buffer = editor.temp_loops.to_string();
+                    editor.cursor_position = editor.edit_buffer.len();
+                }
+                RunArgsField::Delay => {
+                    editor.editing = true;
+                    editor.edit_buffer = editor.temp_delay.to_string();
+                    editor.cursor_position = editor.edit_buffer.len();
+                }
+                RunArgsField::DryRun => {
+                    editor.temp_dry_run = !editor.temp_dry_run;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn run_args_edit_input(&mut self, c: char) {
+        if let Some(ref mut editor) = self.run_args_editor {
+            if editor.editing {
+                editor.edit_buffer.insert(editor.cursor_position, c);
+                editor.cursor_position += 1;
+            }
+        }
+    }
+
+    pub fn run_args_edit_backspace(&mut self) {
+        if let Some(ref mut editor) = self.run_args_editor {
+            if editor.editing && editor.cursor_position > 0 {
+                editor.edit_buffer.remove(editor.cursor_position - 1);
+                editor.cursor_position -= 1;
+            }
+        }
+    }
+
+    pub fn run_args_edit_delete(&mut self) {
+        if let Some(ref mut editor) = self.run_args_editor {
+            if editor.editing && editor.cursor_position < editor.edit_buffer.len() {
+                editor.edit_buffer.remove(editor.cursor_position);
+            }
+        }
+    }
+
+    pub fn run_args_commit_edit(&mut self) {
+        if let Some(ref mut editor) = self.run_args_editor {
+            if editor.editing {
+                match editor.focus_field {
+                    RunArgsField::Loops => {
+                        if let Ok(value) = editor.edit_buffer.parse::<u8>() {
+                            editor.temp_loops = value.clamp(1, 255);
+                        }
+                    }
+                    RunArgsField::Delay => {
+                        if let Ok(value) = editor.edit_buffer.parse::<u64>() {
+                            editor.temp_delay = value.clamp(0, 3600);
+                        }
+                    }
+                    _ => {}
+                }
+                editor.editing = false;
+                editor.edit_buffer.clear();
+                editor.cursor_position = 0;
+            }
+        }
+    }
+
+    pub fn run_args_cancel_edit(&mut self) {
+        if let Some(ref mut editor) = self.run_args_editor {
+            editor.editing = false;
+            editor.edit_buffer.clear();
+            editor.cursor_position = 0;
+        }
+    }
+
+    pub fn run_args_confirm(&mut self) {
+        if let Some(editor) = self.run_args_editor.take() {
+            self.run_args_output = editor.temp_output;
+            self.run_args_loops = editor.temp_loops;
+            self.run_args_delay = editor.temp_delay;
+            self.run_args_dry_run = editor.temp_dry_run;
+
+            self.mode = StateMode::Normal;
+            log::info!(
+                "Run args confirmed: output={}, loops={}, delay={}, dry_run={}",
+                self.run_args_output,
+                self.run_args_loops,
+                self.run_args_delay,
+                self.run_args_dry_run
+            );
+        }
+    }
+
+    pub fn run_args_cancel(&mut self) {
+        self.run_args_editor = None;
+        self.mode = StateMode::Normal;
+        log::info!("Run args cancelled");
+    }
+
+    pub fn set_output_dir(&mut self, path: PathBuf) {
+        if let Some(ref mut editor) = self.run_args_editor {
+            editor.temp_output = path.to_string_lossy().to_string();
+        }
+        self.mode = StateMode::EditingRunArgs;
+    }
+    fn render_run_args_popup(&self, f: &mut Frame, area: Rect) {
+        let editor = match &self.run_args_editor {
+            Some(e) => e,
+            None => return,
+        };
+
+        let popup_area = centered_rect(70, 50, area);
+
+        let block = Block::default()
+            .title("Run Configuration")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow));
+
+        let inner_area = block.inner(popup_area);
+        f.render_widget(Clear, popup_area);
+        f.render_widget(block, popup_area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(inner_area);
+
+        let output_focused = matches!(editor.focus_field, RunArgsField::OutputDir);
+        let output_indicator = if output_focused { ">> " } else { "   " };
+        let output_style = if output_focused {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let output = Paragraph::new(vec![
+            Line::from("Output Directory:"),
+            Line::from(Span::styled(
+                format!("{}{}", output_indicator, editor.temp_output),
+                output_style,
+            )),
+            Line::from(Span::styled(
+                "(e to browse)",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]);
+        f.render_widget(output, chunks[0]);
+
+        let loops_focused = matches!(editor.focus_field, RunArgsField::Loops);
+        let loops_indicator = if loops_focused { ">> " } else { "   " };
+
+        let loops_value_line = if editor.editing && loops_focused {
+            let before = &editor.edit_buffer[..editor.cursor_position];
+            let after = &editor.edit_buffer[editor.cursor_position..];
+            Line::from(vec![
+                Span::raw(loops_indicator),
+                Span::styled(before, Style::default().fg(Color::Green)),
+                Span::styled("█", Style::default().fg(Color::Yellow)),
+                Span::styled(after, Style::default().fg(Color::Green)),
+            ])
+        } else {
+            let style = if loops_focused {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(
+                format!("{}{}", loops_indicator, editor.temp_loops),
+                style,
+            ))
+        };
+
+        let loops = Paragraph::new(vec![
+            Line::from("Loops:"),
+            loops_value_line,
+            Line::from(Span::styled(
+                "(e to edit)",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]);
+        f.render_widget(loops, chunks[1]);
+
+        let delay_focused = matches!(editor.focus_field, RunArgsField::Delay);
+        let delay_indicator = if delay_focused { ">> " } else { "   " };
+
+        let delay_value_line = if editor.editing && delay_focused {
+            let before = &editor.edit_buffer[..editor.cursor_position];
+            let after = &editor.edit_buffer[editor.cursor_position..];
+            Line::from(vec![
+                Span::raw(delay_indicator),
+                Span::styled(before, Style::default().fg(Color::Green)),
+                Span::styled("█", Style::default().fg(Color::Yellow)),
+                Span::styled(after, Style::default().fg(Color::Green)),
+            ])
+        } else {
+            let style = if delay_focused {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(Span::styled(
+                format!("{}{}", delay_indicator, editor.temp_delay),
+                style,
+            ))
+        };
+
+        let delay = Paragraph::new(vec![
+            Line::from("Delay (seconds):"),
+            delay_value_line,
+            Line::from(Span::styled(
+                "(e to edit)",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]);
+        f.render_widget(delay, chunks[2]);
+
+        let dry_run_focused = matches!(editor.focus_field, RunArgsField::DryRun);
+        let dry_run_indicator = if dry_run_focused { ">> " } else { "   " };
+        let dry_run_style = if dry_run_focused {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let dry_run = Paragraph::new(vec![
+            Line::from("Dry Run:"),
+            Line::from(Span::styled(
+                format!(
+                    "{}[{}] {}",
+                    dry_run_indicator,
+                    if editor.temp_dry_run { "X" } else { " " },
+                    if editor.temp_dry_run { "Yes" } else { "No" }
+                ),
+                dry_run_style,
+            )),
+            Line::from(Span::styled(
+                "(e to toggle)",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]);
+        f.render_widget(dry_run, chunks[3]);
+
+        // Help text
+        let help = Paragraph::new("↑↓ Navigate  e Edit  Enter Confirm  Esc Cancel")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(help, chunks[5]);
     }
 }
 
@@ -955,18 +1317,20 @@ fn render_state_help_popup(f: &mut Frame, area: Rect) {
         Line::from("←/→ - Navigate device config fields"),
         Line::from(""),
         Line::from(Span::styled(
-            "File Management (local only):",
+            "File Management:",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from("l - Load config and script files from disk"),
+        Line::from("l - Load config and script files"),
+        Line::from("    TCP: browse local files"),
+        Line::from("    HTTP: browse server's registered scripts"),
         Line::from(""),
         Line::from(Span::styled(
             "Running:",
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from("n - Start new run with current config"),
-        Line::from("   Local: can load new scripts"),
-        Line::from("   Remote: reruns server's existing script only"),
+        Line::from("    TCP: runs locally with loaded script"),
+        Line::from("    HTTP: dispatches to server via /run endpoint"),
         Line::from(""),
         Line::from(Span::styled(
             "Editing (when disconnected):",
@@ -1016,10 +1380,7 @@ fn toml_value_to_string(value: &toml::Value) -> String {
             let items: Vec<String> = arr.iter().map(toml_value_to_string).collect();
             format!("[{}]", items.join(", "))
         }
-        toml::Value::Table(_) => {
-            // For nested tables, just serialize as "{}" for now
-            "{}".to_string()
-        }
+        toml::Value::Table(_) => "{}".to_string(),
         toml::Value::Datetime(dt) => format!("\"{}\"", dt),
     }
 }

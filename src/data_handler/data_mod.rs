@@ -29,8 +29,24 @@ pub struct GeneralConfig {
     pub interpreter: String,
     pub validations: Option<Vec<String>>,
     pub subsampling: Option<bool>,
+    pub allowed_output_dirs: Option<Vec<String>>,
 }
-
+impl Configuration {
+    pub fn get_allowed_output_dirs(&self) -> Vec<PathBuf> {
+        self.general
+            .allowed_output_dirs
+            .as_ref()
+            .map(|dirs| dirs.iter().map(|s| PathBuf::from(s)).collect())
+            .unwrap_or_else(|| {
+                let mut defaults =
+                    vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))];
+                if let Some(home) = dirs::home_dir() {
+                    defaults.push(home);
+                }
+                defaults
+            })
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EmailServer {
     pub server: String,
@@ -261,7 +277,6 @@ impl Device {
                             }
                         }
                         (MeasurementData::Multi(existing), MeasurementData::Single(new_values)) => {
-                            // Incoming Single, existing Multi - check if it matches expected length
                             if let Some(first_vec) = existing.first() {
                                 let expected_len = first_vec.len();
 
@@ -289,7 +304,6 @@ impl Device {
                                     );
                                 }
                             } else {
-                                // Empty Multi - shouldn't happen but handle gracefully
                                 log::warn!(
                                     "Empty Multi for '{}' - appending Single array (length {}) as first row",
                                     measure_type,
@@ -395,7 +409,6 @@ impl Device {
             match &measurement.data {
                 MeasurementData::Single(single_values) => {
                     if let Some(timestamps) = self.timestamps.get(key) {
-                        // Parse timestamps to seconds since first measurement
                         if let Some(base_time) = timestamps.first().and_then(|s| {
                             OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
                                 .ok()
@@ -454,7 +467,6 @@ impl Device {
                 MeasurementData::Multi(multi_values) => {
                     if let Some(latest_array) = multi_values.last() {
                         if latest_array.len() > 100 {
-                            // Use index as x-coordinate for Multi data
                             let data_points: Vec<DataPoint> = latest_array
                                 .iter()
                                 .enumerate()
@@ -641,7 +653,6 @@ impl ServerState {
             })
             .next()?;
 
-        // Collect all device configs
         let device_configs: HashMap<String, HashMap<String, Value>> = self
             .entities
             .iter()
@@ -1027,7 +1038,6 @@ pub fn parse_custom_timestamp(
     timestamp: &str,
     is_header_format: bool,
 ) -> Result<OffsetDateTime, Parse> {
-    // Choose the format based on whether it uses dashes or underscores
     let format = if is_header_format {
         format_description!(
             "[day]_[month]_[year]_[hour repr:24]_[minute]_[second]_[subsecond digits:3]"
@@ -1274,7 +1284,6 @@ mod tests {
 
         device.update(other);
 
-        // Should still be Single with only original data
         if let Some(measurement) = device.measurements.get("data") {
             if let MeasurementData::Single(data) = &measurement.data {
                 assert_eq!(data, &vec![1.0, 2.0, 3.0]);
@@ -1404,7 +1413,6 @@ mod tests {
 
         device.update(other);
 
-        // Should remain unchanged
         if let Some(measurement) = device.measurements.get("sensors") {
             if let MeasurementData::Multi(data) = &measurement.data {
                 assert_eq!(data.len(), 2);
@@ -1481,7 +1489,6 @@ mod tests {
 
         device.update(other);
 
-        // Should remain unchanged due to unit mismatch
         if let Some(measurement) = device.measurements.get("temperature") {
             if let MeasurementData::Single(data) = &measurement.data {
                 assert_eq!(data, &vec![20.0]);
@@ -1531,7 +1538,6 @@ mod tests {
             "pressure".to_string(),
             create_measurement(MeasurementData::Single(vec![1013.25]), "hPa"),
         );
-        // Intentionally not adding timestamp
 
         device.update(other);
 

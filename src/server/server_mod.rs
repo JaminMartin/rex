@@ -27,7 +27,27 @@ use crate::data_handler::configurable_dir_path;
 use tokio::signal::ctrl_c;
 use tokio::sync::broadcast;
 use uuid::Uuid;
+async fn get_allowed_output_dirs() -> impl IntoResponse {
+    match get_configuration() {
+        Ok(config) => {
+            let dirs = config.get_allowed_output_dirs();
+            let dir_strings: Vec<String> = dirs
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
 
+            Json(serde_json::json!({
+                "dirs": dir_strings
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to get configuration: {}", e),
+        )
+            .into_response(),
+    }
+}
 fn get_allowed_scripts_dir() -> Result<PathBuf, String> {
     configurable_dir_path("XDG_CONFIG_HOME", dirs::config_dir)
         .map(|mut path| {
@@ -40,7 +60,6 @@ fn get_allowed_scripts_dir() -> Result<PathBuf, String> {
 async fn get_allowed_scripts_list() -> impl IntoResponse {
     match get_allowed_scripts_dir() {
         Ok(base_dir) => {
-            // Changed from Some to Ok
             let mut files = Vec::new();
 
             for entry in WalkDir::new(&base_dir)
@@ -66,7 +85,6 @@ async fn get_allowed_scripts_list() -> impl IntoResponse {
             .into_response()
         }
         Err(e) => (
-            // Changed from None to Err
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to get scripts directory: {}", e),
         )
@@ -304,7 +322,7 @@ async fn check_session(State(state): State<AppState>) -> impl IntoResponse {
     if running {
         StatusCode::OK
     } else {
-        StatusCode::NO_CONTENT // 204: Server is up, but no session active
+        StatusCode::NO_CONTENT
     }
 }
 pub async fn run_server(
@@ -331,10 +349,11 @@ pub async fn run_server(
         .route("/status_check", get(check_session))
         .route("/ws", get(websocket_handler))
         .route("/allowed_scripts", get(get_allowed_scripts_list))
+        .route("/allowed_output_dirs", get(get_allowed_output_dirs))
         .with_state(state);
 
-    log::info!("Rex Server listening on http://0.0.0.0:{}", args.address);
-    let address = format!("0.0.0.0:{}", args.address);
+    log::info!("Rex Server listening on http://0.0.0.0:{}", args.port);
+    let address = format!("0.0.0.0:{}", args.port);
     let listener = tokio::net::TcpListener::bind(address.clone())
         .await
         .unwrap();

@@ -22,6 +22,7 @@ pub struct FilePicker {
     max_depth: usize,
     restricted_mode: bool,
     remote_mode: bool,
+    dir_only: bool,
 }
 
 impl FilePicker {
@@ -40,6 +41,7 @@ impl FilePicker {
             max_depth: 4,
             restricted_mode: false,
             remote_mode: false,
+            dir_only: false,
         };
         picker.scan_directory();
         picker.update_filtered_files();
@@ -63,8 +65,51 @@ impl FilePicker {
             extensions,
             title,
             max_depth: 4,
-            restricted_mode: true, // Can't navigate dirs remotely
+            restricted_mode: true,
             remote_mode: true,
+            dir_only: false,
+        };
+        picker.update_filtered_files();
+        picker
+    }
+    pub fn new_dir_only(start_dir: PathBuf, title: String) -> Self {
+        let mut picker = FilePicker {
+            current_dir: start_dir.clone(),
+            all_files: vec![],
+            filtered_files: vec![],
+            query: String::new(),
+            cursor_position: 0,
+            selected_index: 0,
+            list_state: ListState::default(),
+            matcher: Matcher::new(Config::DEFAULT),
+            extensions: vec![],
+            title,
+            max_depth: 4,
+            restricted_mode: false,
+            remote_mode: false,
+            dir_only: true,
+        };
+        picker.scan_directory();
+        picker.update_filtered_files();
+        picker
+    }
+
+    pub fn new_remote_dirs(base_dir: PathBuf, dirs: Vec<PathBuf>, title: String) -> Self {
+        let mut picker = FilePicker {
+            current_dir: base_dir,
+            all_files: dirs,
+            filtered_files: vec![],
+            query: String::new(),
+            cursor_position: 0,
+            selected_index: 0,
+            list_state: ListState::default(),
+            matcher: Matcher::new(Config::DEFAULT),
+            extensions: vec![],
+            title,
+            max_depth: 3,
+            restricted_mode: true,
+            remote_mode: true,
+            dir_only: true,
         };
         picker.update_filtered_files();
         picker
@@ -73,6 +118,7 @@ impl FilePicker {
         if self.remote_mode {
             return;
         }
+
         self.all_files.clear();
 
         for entry in WalkDir::new(&self.current_dir)
@@ -83,7 +129,11 @@ impl FilePicker {
         {
             let path = entry.path();
 
-            if path.is_file() {
+            if self.dir_only {
+                if path.is_dir() && path != self.current_dir {
+                    self.all_files.push(path.to_path_buf());
+                }
+            } else if path.is_file() {
                 if let Some(ext) = path.extension() {
                     if self.extensions.iter().any(|e| {
                         ext.to_string_lossy().to_lowercase()
@@ -284,11 +334,21 @@ impl FilePicker {
             .filtered_files
             .iter()
             .map(|path| {
-                let display = path
-                    .strip_prefix(&self.current_dir)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .to_string();
+                let display = if self.remote_mode && self.dir_only {
+                    path.to_string_lossy().to_string()
+                } else {
+                    path.strip_prefix(&self.current_dir)
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .to_string()
+                };
+
+                let display = if display.is_empty() {
+                    ".".to_string()
+                } else {
+                    display
+                };
+
                 ListItem::new(display).style(Style::default().fg(Color::White))
             })
             .collect();

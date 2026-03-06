@@ -17,7 +17,6 @@ struct HTTPTransportInner {
 
 impl HTTPTransport {
     pub fn new(base_url: &str) -> Self {
-        // Auto-add http:// if missing
         let base_url = if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
             format!("http://{}", base_url)
         } else {
@@ -41,6 +40,45 @@ impl HTTPTransport {
                 has_active_session: false,
             })),
         }
+    }
+    pub async fn get_allowed_output_dirs(
+        &self,
+    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send>> {
+        let inner = self.inner.lock().await;
+        let url = format!("{}/allowed_output_dirs", inner.base_url);
+
+        let response = inner
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error + Send> { Box::new(e) })?;
+
+        if !response.status().is_success() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to get output dirs list",
+            )));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error + Send> { Box::new(e) })?;
+
+        let dirs: Vec<PathBuf> = json["dirs"]
+            .as_array()
+            .ok_or_else(|| -> Box<dyn std::error::Error + Send> {
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid dirs array",
+                ))
+            })?
+            .iter()
+            .filter_map(|v| v.as_str().map(PathBuf::from))
+            .collect();
+
+        Ok(dirs)
     }
     pub async fn get_allowed_scripts(
         &self,
@@ -90,16 +128,13 @@ impl HTTPTransport {
 
         Ok((base_dir, files))
     }
-    // Check if there's an active session
+
     async fn check_active_session(&self) -> bool {
         let inner = self.inner.lock().await;
         let url = format!("{}/status_check", inner.base_url);
 
         match inner.client.get(&url).send().await {
-            Ok(response) => {
-                // 200 = session running, 204 = no session
-                response.status() == reqwest::StatusCode::OK
-            }
+            Ok(response) => response.status() == reqwest::StatusCode::OK,
             Err(_) => false,
         }
     }
@@ -154,7 +189,6 @@ impl Transport for HTTPTransport {
             Err(e) => {
                 log::error!("HTTP request to {} failed: {}", url, e);
 
-                // Update session state - server unreachable
                 inner.has_active_session = false;
 
                 if e.is_timeout() {
@@ -175,7 +209,6 @@ impl Transport for HTTPTransport {
 
         let status = response.status();
 
-        // Handle 502 - no active session
         if status == reqwest::StatusCode::BAD_GATEWAY {
             inner.has_active_session = false;
             inner.last_session_check = Some(std::time::Instant::now());
@@ -187,7 +220,6 @@ impl Transport for HTTPTransport {
             )));
         }
 
-        // Success - we have an active session
         if status.is_success() {
             inner.has_active_session = true;
             inner.last_session_check = Some(std::time::Instant::now());
@@ -220,8 +252,6 @@ impl Transport for HTTPTransport {
     }
 
     fn is_connected(&self) -> bool {
-        // For HTTP, "connected" means there's an active session
-        // Use try_lock to avoid blocking
         if let Ok(inner) = self.inner.try_lock() {
             inner.has_active_session
         } else {
@@ -230,7 +260,6 @@ impl Transport for HTTPTransport {
     }
 
     async fn ensure_connection(&mut self) -> Result<(), Box<dyn std::error::Error + Send>> {
-        // Check if there's an active session
         let has_session = self.check_active_session().await;
 
         let mut inner = self.inner.lock().await;
