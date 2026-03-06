@@ -4,7 +4,7 @@ use crate::data_handler::{
 };
 use crate::mail_handler::mailer;
 use crate::server::http_transport::HTTPTransport;
-//use crate::server::websocket_transport::WebSocketTransport;
+
 use crate::tcp_handler::TCPTransport;
 use crate::tcp_handler::{save_state, send_to_clickhouse, server_status, start_tcp_server};
 use crate::tui_tool::run_tui;
@@ -135,7 +135,7 @@ pub struct RunArgs {
     #[serde(default = "default_loops")]
     pub loops: u8,
     /// Path to script containing the session setup / control flow
-    #[arg(short, long)]
+    #[arg(value_name = "SCRIPT")]
     pub path: PathBuf,
     /// Dry run, will not log data. Can be used for long term monitoring
     #[arg(short = 'n', long, default_value_t = false)]
@@ -181,29 +181,21 @@ pub enum NetworkBackend {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct StandaloneArgs {
-    // Port the current session is running on. If you are running this on the same device it will be 0.0.0.0:7676
-    // otherwise, please use the devices IP , device_ip:7676
-    #[arg(short, long)]
+    /// Address of the running rex instance (e.g. 192.168.1.10:7676)
+    #[arg(value_name = "ADDRESS")]
     address: String,
-    /// Network backend, either http or tcp (default tcp)
-    #[arg(short, long)]
+    /// Network backend to use for connecting to the rex instance
+    #[arg(short, long, default_value = "tcp")]
     backend: NetworkBackend,
-    /// desired log level, info displays summary of connected instruments & recent data. debug will include all data, including standard output from Python.
-    #[arg(short, long, default_value_t = 2)]
-    verbosity: u8,
 }
 
 /// A commandline DAQ server
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct ServeArgs {
-    // Port the current session is running on. If you are running this on the same device it will be 0.0.0.0:7676
-    // otherwise, please use the devices IP , device_ip:7676
+    /// Port to listen on for the HTTP API server
     #[arg(short, long, default_value_t = 9000)]
-    pub address: u32,
-    /// desired log level, info displays summary of connected instruments & recent data. debug will include all data, including standard output from Python.
-    #[arg(short, long, default_value_t = 2)]
-    pub verbosity: u8,
+    pub port: u32,
 }
 
 // Core CLI tool used for rex
