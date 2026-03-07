@@ -367,7 +367,9 @@ impl StateTab {
             ];
 
             if let Some(ref meta) = info.meta {
-                for (key, value) in &meta.meta {
+                let mut meta_fields: Vec<(&String, &Value)> = meta.meta.iter().collect();
+                meta_fields.sort_by(|a, b| a.0.cmp(&b.0));
+                for (key, value) in meta_fields {
                     self.session_field_names.push(format!("meta.{}", key));
                     self.session_field_values.push(format_value(value));
                 }
