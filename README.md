@@ -627,7 +627,8 @@ Rex also respects:
 
 - [ ] Universal scripting language support
 - [ ] Configurable subsampling via the REST API
-
+- [ ] Web based front end similar to the TUI view using Leptos & Charming (Apache Echarts)
+- [ ] Define drivers in multiple languages and use them together through the universial scripting language
 # Projects using Rex
 To get some ideas of how to use rex, check out these projects using it.
 
