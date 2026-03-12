@@ -16,6 +16,10 @@ Build deterministic experiment pipelines in the scripting language of your choic
 - Interactive TUI with live plotting and session management
 - Optional ClickHouse database backend for persistent storage
 
+# See it in action:
+
+![video](https://raw.githubusercontent.com/JaminMartin/rex/refs/heads/devel/assets/demo.gif)
+
 # Architecture
 ```
     +-------------------------+                                                                                                       
