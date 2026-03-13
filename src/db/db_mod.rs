@@ -13,7 +13,6 @@ pub struct ClickhouseServer {
     pub measurement_table: String,
     pub session_meta_table: String,
     pub device_meta_table: String,
-    pub results_table: String,
 }
 
 #[derive(Debug, Row, Serialize)]

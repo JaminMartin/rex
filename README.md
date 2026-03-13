@@ -145,15 +145,15 @@ username = "rex_user" # Optional (required if security = true). Your email addre
 password = "rex_admin" # Optional (required if security = true). Your email password. If using Google's SMTP server, this is your application password.
 
 [click_house_server]
+# you can inspect the table names in the db-support file if you are using it and use them here as well as the user name and password set in the docker compose file
 server = "http://server_address"
 port = "8123" # ClickHouse HTTP port
 username = "your_username"
 password = "a_strong_password"
 database = "default"
-measurement_table = "your_measurement_table"
+measurement_table = "your_measurement_table" 
 session_meta_table = "your_session_meta_data_table"
 device_meta_table = "your_device_meta_table"
-results_table = "your_results_table"
 ```
 Both the email service and database backend are optional and not required for regular use. Documentation on how to set up the corresponding ClickHouse DB can be found [here](https://github.com/JaminMartin/rex/tree/master/db-support).
 
