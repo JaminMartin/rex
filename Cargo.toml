@@ -1,14 +1,34 @@
-[workspace]
-resolver = "2"
-members = ["core", "cli"]
+[package]
+name = "rex"
+edition = "2021"
 
-[workspace.package]
-version = "1.0.0"
+version = "1.1.0"
+description = "Command line tool for automating data collection"
 license = "GPL-3.0-or-later"
+repository = "https://github.com/JaminMartin/rex"
+homepage = "https://github.com/JaminMartin/rex"
 
-[workspace.dependencies]
+[[bin]]
+name = "rex"
+path = "src/main.rs"
+[lib]
+name = "rex"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
 clap = { version = "4.5.9", features = ["derive", "cargo"] }
-lettre = { version = "0.11", features = ["builder"] }
+# lettre = { version = "0.11", features = ["builder"] }
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "tokio1",
+    "rustls",
+    "tokio1-rustls",
+    "ring",
+    "webpki-roots",
+] }
+
 toml = "0.8.19"
 time = { version = "0.3", features = [
     "macros",
@@ -22,11 +42,25 @@ tokio = { version = "1.41.1", features = ["full"] }
 log = "0.4.22"
 env_logger = "0.11.5"
 crossbeam = "0.8.4"
-ratatui = "0.29.0"
-crossterm = "0.28.1"
-tui-logger = { version = "0.14.0", features = ["crossterm"] }
+ratatui = "0.30.0"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+tui-logger = { version = "0.18.0", features = ["crossterm"] }
 itertools = "0.13.0"
 dirs = "6.0.0"
 clickhouse = { version = "0.13.2", features = ["uuid", "time"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-axum = "0.8.4"
+axum = { version = "0.8.4", features = ["ws"] }
+
+lttb = "0.2.0"
+nucleo-matcher = "0.3"
+walkdir = "2.5"
+reqwest = { version = "0.13", features = ["blocking", "json", "rustls",] }
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
+color-eyre = "0.6.5"
+futures = "0.3.31"
+async-trait = "0.1.89"
+ratatui-themes = "0.2.0"
+[dev-dependencies]
+regex = "1"
+tempfile = "3.3"

@@ -5,7 +5,7 @@ build-backend = "maturin"
 
 [project]
 name = "rex-pycli"
-version = "1.0.0"
+version = "1.1.0"
 description = "Rex CLI"
 requires-python = ">=3.13"
 readme = "README.md"
@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Rust",
 ]
 keywords = ["cli", "rex", "experiment", "automation", "testing", "DAQ", "data acquisition"]
-
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/JaminMartin/rex"
@@ -30,8 +30,7 @@ Repository = "https://github.com/JaminMartin/rex"
 Issues = "https://github.com/JaminMartin/rex/issues"
 
 [tool.maturin]
+bindings = "bin"
 module-name = "rex"
-manifest-path = "cli/Cargo.toml"
+manifest-path = "Cargo.toml"
 include = ["LICENSE"]
-[tool.maturin.scripts]
-rex = "rex"

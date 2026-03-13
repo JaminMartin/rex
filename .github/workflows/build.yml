@@ -59,27 +59,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
-      - name: Install OpenSSL dependencies (Ubuntu)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
+      # - name: Install OpenSSL dependencies (Ubuntu)
+      #   run: |
+      #     sudo apt-get update
+      #     sudo apt-get install -y libssl-dev pkg-config
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter -m cli/Cargo.toml
+          args: --release --out dist --find-interpreter -m Cargo.toml
           sccache: "true"
           manylinux: auto
-          before-script-linux: |
+          # before-script-linux: |
 
-            if command -v yum &> /dev/null; then
-              yum install -y openssl-devel
-            elif command -v apt-get &> /dev/null; then
-              apt-get update
-              apt-get install -y libssl-dev pkg-config
-            else
-              echo "Neither yum nor apt-get found. Trying to proceed without installing packages."
-            fi
+          #   if command -v yum &> /dev/null; then
+          #     yum install -y openssl-devel
+          #   elif command -v apt-get &> /dev/null; then
+          #     apt-get update
+          #     apt-get install -y libssl-dev pkg-config
+          #   else
+          #     echo "Neither yum nor apt-get found. Trying to proceed without installing packages."
+          #   fi
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -98,7 +98,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter -m cli/Cargo.toml
+          args: --release --out dist --find-interpreter -m Cargo.toml
           sccache: "true"
 
   macos:
@@ -118,5 +118,5 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter -m cli/Cargo.toml
+          args: --release --out dist --find-interpreter -m Cargo.toml
           sccache: "true"
