@@ -1,4 +1,4 @@
-## [1.1.0-alpha.1] - 2026-01-17
+## [1.1.0] - 2026-03-13
 
 ### 🚀 Features
 
@@ -9,6 +9,14 @@
 - Alpha version of HTTP viewer (WIP)
 - Configuration of sub sampling
 - Removal of openssl
+- [**breaking**] Added TCP or HTTP backend
+- Added better endpoints for http backend
+- Secure script searching with remote HTTP
+- Migration to fully async event driven
+- [**breaking**] Configurable dirs
+- [**breaking**] More ergonomic CLI commands
+- Added themes!
+- Timestamps now formatted in RFC3339
 
 ### 🐛 Bug Fixes
 
@@ -18,6 +26,11 @@
 - Build pineline for python build
 - Updated pyproject.toml to maturin docs
 - Updated deploy ci/cd to deploy to test pypi
+- [**breaking**] TCP connection is now local only
+- Fixed chart rendering aligment
+- Updated menu
+- Fixed meta data ordering
+- Updated dashboard support for grafana
 
 ### 💼 Other
 
@@ -26,6 +39,10 @@
 - Improved macos support
 - Updated changelog
 - Removal of openssl in pipeline
+- Updated README.md
+- Merge pull request #16 from JaminMartin/devel
+
+Merging features for 1.1 release
 
 ### 🚜 Refactor
 
@@ -38,28 +55,18 @@
 - Using cliff.toml for git cliff
 - Start of async refactor for TUI veiwer
 - Version bump
+- Dependency update for action model
+- Updated readme
+- Ratatui version bump
+- Added example video
+- Added gif
+- Updated just file
 ## [1.0.0] - 2025-09-15
 
 ### 🐛 Bug Fixes
 
-- Fixed UV caching
-
-### 💼 Other
-
-- Updated *.nix files for nixos install
-- Updated pyproject.toml to fix build
-- Updated toml manifests
-- Revised manifest
-- Updated manifests for workspace
-- Maturin include LICENSE file
-- Update LICENSE
-- Updated flake.
-- Updated workflow to use UV
-## [1.0.0-alpha.1] - 2025-09-14
-
-### 🐛 Bug Fixes
-
 - Fixed merge error and formatted
+- Fixed UV caching
 
 ### 💼 Other
 
@@ -73,16 +80,16 @@ Devel
 
 updated docs
 - Fixed typo in docs
-## [0.9.4-alpha.2] - 2025-05-27
-
-### 💼 Other
-
-- Minimal database & viewing configuration
-- Updated docs
-- Updated docs
-- Added port overides, config overides.
-- Added dashboard template
-## [0.9.4-alpha.1] - 2025-05-21
+- Updated *.nix files for nixos install
+- Updated pyproject.toml to fix build
+- Updated toml manifests
+- Revised manifest
+- Updated manifests for workspace
+- Maturin include LICENSE file
+- Update LICENSE
+- Updated flake.
+- Updated workflow to use UV
+## [0.9.4] - 2025-05-27
 
 ### 🐛 Bug Fixes
 
@@ -97,6 +104,11 @@ updated docs
 - Updated to reflect refactor & memory issues in #2
 Also added vec<vec<f64>> mappings for database insertion
 Also added json data serialisation for device configurations.
+- Minimal database & viewing configuration
+- Updated docs
+- Updated docs
+- Added port overides, config overides.
+- Added dashboard template
 
 ### 🚜 Refactor
 
@@ -213,12 +225,6 @@ rex run in place of the original rex -p... and rex view for the viewer behavior
 - Minor bug fixes and version bump
 - Tidied up workflow and warnings
 ## [0.9.0] - 2025-05-07
-
-### 💼 Other
-
-- Full deploy
-- Updated package name
-## [0.9.0-alpha.1] - 2025-05-06
 
 ### 🐛 Bug Fixes
 
@@ -369,6 +375,8 @@ Signed-off-by: JaminMartin <jamin.martin1@gmail.com>
 - First deploy of rex.
 
 Signed-off-by: Jamin Martin <jamin.martin1@gmail.com>
+- Full deploy
+- Updated package name
 
 ### 🚜 Refactor
 

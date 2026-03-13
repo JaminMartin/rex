@@ -37,6 +37,8 @@ postprocessors = [
 [git]
 # Parse commits according to the conventional commits specification.
 # See https://www.conventionalcommits.org
+
+tag_pattern = "^v?[0-9]+\\.[0-9]+\\.[0-9]+$"
 conventional_commits = true
 # Exclude commits that do not match the conventional commits specification.
 filter_unconventional = false
