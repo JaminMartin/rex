@@ -20,8 +20,10 @@ pub struct ClickhouseServer {
 pub struct SessionClickhouse {
     #[serde(with = "clickhouse::serde::uuid")]
     pub session_id: Uuid,
-    pub start_time: String,
-    pub end_time: String,
+    #[serde(with = "clickhouse::serde::time::datetime64::micros")]
+    pub start_time: OffsetDateTime,
+    #[serde(with = "clickhouse::serde::time::datetime64::micros")]
+    pub end_time: OffsetDateTime,
     pub name: String,
     pub email: String,
     pub session_name: String,

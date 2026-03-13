@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{self};
 use std::path::PathBuf;
 use time::error::Parse;
+use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::OffsetDateTime;
 use toml::{Table, Value};
@@ -80,25 +81,58 @@ pub struct DataSession {
 
 impl DataSession {
     pub fn new(info: SessionInfo, uuid: Uuid) -> Self {
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_default();
+
         DataSession {
-            start_time: Some(create_time_stamp(false)),
+            start_time: Some(now.clone()),
             end_time: None,
             uuid: Some(uuid),
             info,
         }
     }
     fn append_end_time(&mut self) {
-        self.end_time = Some(create_time_stamp(false));
+        self.end_time = Some(
+            OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_default(),
+        );
     }
 
     pub fn to_clickhouse(&self, id: Uuid) -> Option<SessionClickhouse> {
-        let start_time = self.start_time.as_ref()?;
-        let end_time = self.end_time.as_ref()?;
+        let start_time = self.start_time.clone().unwrap_or_else(|| {
+            OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .expect("Failed to format time as RFC3339")
+        });
+        let end_time = self.end_time.clone().unwrap_or_else(|| {
+            OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .expect("Failed to format time as RFC3339")
+        });
+
+        let parsed_start =
+            OffsetDateTime::parse(&start_time, &time::format_description::well_known::Rfc3339)
+                .map_err(|e| {
+                    format!(
+                 "Invalid start_time '{}': {} (expected RFC3339, e.g. '2026-03-03T09:46:04Z')",
+                 start_time, e
+             )
+                });
+        let parsed_end =
+            OffsetDateTime::parse(&end_time, &time::format_description::well_known::Rfc3339)
+                .map_err(|e| {
+                    format!(
+                        "Invalid end_time '{}': {} (expected RFC3339, e.g. '2026-03-03T09:46:04Z')",
+                        end_time, e
+                    )
+                });
 
         let exp = SessionClickhouse {
             session_id: id,
-            start_time: start_time.clone(),
-            end_time: end_time.clone(),
+            start_time: parsed_start.expect("expected offset datetime"),
+            end_time: parsed_end.expect("expected offset datetime"),
             name: self.info.name.clone(),
             email: self.info.email.clone(),
             session_name: self.info.session_name.clone(),

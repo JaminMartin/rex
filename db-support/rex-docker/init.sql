@@ -4,8 +4,8 @@ SET enable_json_type = 1;
 
 CREATE TABLE IF NOT EXISTS session_info (
     session_id UUID,
-    start_time String,
-    end_time String,
+    start_time DateTime64(6, 'UTC'),
+    end_time DateTime64(6, 'UTC'),
     name String,
     email String,
     session_name String,
@@ -31,17 +31,3 @@ CREATE TABLE IF NOT EXISTS device_info (
     device_name String,
     device_config JSON
 ) ENGINE = MergeTree ORDER BY session_id;
-
-
-
-CREATE TABLE IF NOT EXISTS results_store (
-    session_id UUID,
-    result_type String,
-    result_info String,
-    result_status Bool,
-    measured_value Float64,
-    upper_bound Float64,
-    lower_bound Float64,
-    result_meta JSON,
-) ENGINE = MergeTree ORDER BY (session_id, result_type);
-
