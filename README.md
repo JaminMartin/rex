@@ -70,7 +70,11 @@ Clone the repository and run:
 ```shell
 cargo install --path .
 ```
-Alternatively, you can embed this in a Python project, as Python bindings are exposed and packaged on `PyPi` as `rex-pycli`.
+Alternatively, if you are using `python` and `uv`, rex is packaged on `PyPi` as `rex-pycli`. You can simply install the CLI by running:
+
+```
+uv tool install rex-pycli
+```
 
 # Quick Start
 
