@@ -1,3 +1,15 @@
+## [1.1.1] - 2026-04-13
+
+### 🐛 Bug Fixes
+
+- Updated nested configs
+
+### 💼 Other
+
+- Updated version
+- Merge pull request #17 from JaminMartin/devel
+
+Devel
 ## [1.1.0] - 2026-03-13
 
 ### 🚀 Features
@@ -43,6 +55,7 @@
 - Merge pull request #16 from JaminMartin/devel
 
 Merging features for 1.1 release
+- Updated changelog
 
 ### 🚜 Refactor
 
