@@ -830,13 +830,8 @@ impl StateTab {
     }
     pub fn can_rerun(&self) -> bool {
         let has_config = self.session_info.is_some() && !self.device_configs.is_empty();
-        // WIP will eventually be token based for running remote python scripts but allow for local search of allowed scritps
-        if self.remote {
-            has_config && self.server_script_path.is_some()
-        } else {
-            let has_script = self.loaded_script_path.is_some() || self.server_script_path.is_some();
-            has_config && has_script
-        }
+        let has_script = self.loaded_script_path.is_some() || self.server_script_path.is_some();
+        has_config && has_script
     }
 
     fn get_script_path(&self) -> Option<PathBuf> {
