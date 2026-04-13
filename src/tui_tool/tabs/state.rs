@@ -391,10 +391,8 @@ impl StateTab {
             if selected_idx < self.device_names.len() {
                 let device_name = &self.device_names[selected_idx];
                 if let Some(config) = self.device_configs.get(device_name) {
-                    let mut fields: Vec<(String, String)> = config
-                        .iter()
-                        .map(|(k, v)| (k.clone(), format_value(v)))
-                        .collect();
+                    let mut fields: Vec<(String, String)> = Vec::new();
+                    flatten_toml_fields(config, "", &mut fields);
                     fields.sort_by(|a, b| a.0.cmp(&b.0));
 
                     self.device_field_names = fields.iter().map(|(k, _)| k.clone()).collect();
@@ -594,7 +592,7 @@ impl StateTab {
 
                         if let Some(config) = self.device_configs.get_mut(&device_name) {
                             let new_value = parse_value(&self.edit_buffer);
-                            config.insert(field_name.clone(), new_value);
+                            set_nested_value(config, &field_name, new_value);
                             self.refresh_device_field_lists();
                             log::info!("Updated device '{}' field: {}", device_name, field_name);
                         }
@@ -802,8 +800,25 @@ impl StateTab {
 
         for (device_name, config) in &self.device_configs {
             toml_content.push_str(&format!("\n[device.{}]\n", device_name));
-            for (key, value) in config {
-                toml_content.push_str(&format!("{} = {}\n", key, toml_value_to_string(value)));
+
+            let mut sorted_keys: Vec<&String> = config.keys().collect();
+            sorted_keys.sort();
+            for key in &sorted_keys {
+                let value = &config[*key];
+                if !matches!(value, Value::Table(_)) {
+                    toml_content.push_str(&format!("{} = {}\n", key, toml_value_to_string(value)));
+                }
+            }
+            // Then write nested table sections
+            for key in &sorted_keys {
+                let value = &config[*key];
+                if let Value::Table(table) = value {
+                    write_toml_table(
+                        &mut toml_content,
+                        &format!("device.{}.{}", device_name, key),
+                        table,
+                    );
+                }
             }
         }
 
@@ -1230,10 +1245,77 @@ fn format_value(value: &toml::Value) -> String {
             let items: Vec<String> = arr.iter().map(format_value).collect();
             format!("[{}]", items.join(", "))
         }
-        toml::Value::Table(_) => "{...}".to_string(),
+        toml::Value::Table(t) => {
+            let items: Vec<String> = t
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, format_value(v)))
+                .collect();
+            format!("{{{}}}", items.join(", "))
+        }
         toml::Value::Datetime(dt) => dt.to_string(),
     }
 }
+fn flatten_toml_fields(
+    map: &HashMap<String, Value>,
+    prefix: &str,
+    out: &mut Vec<(String, String)>,
+) {
+    for (k, v) in map {
+        let full_key = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{}.{}", prefix, k)
+        };
+        match v {
+            Value::Table(table) => {
+                let inner: HashMap<String, Value> =
+                    table.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                flatten_toml_fields(&inner, &full_key, out);
+            }
+            _ => {
+                out.push((full_key, format_value(v)));
+            }
+        }
+    }
+}
+
+fn set_nested_value(map: &mut HashMap<String, Value>, dotted_key: &str, value: Value) {
+    let parts: Vec<&str> = dotted_key.splitn(2, '.').collect();
+    if parts.len() == 1 {
+        map.insert(dotted_key.to_string(), value);
+    } else {
+        let top_key = parts[0];
+        let rest = parts[1];
+        let entry = map
+            .entry(top_key.to_string())
+            .or_insert_with(|| Value::Table(toml::map::Map::new()));
+        if let Value::Table(ref mut table) = entry {
+            let mut inner: HashMap<String, Value> =
+                table.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            set_nested_value(&mut inner, rest, value);
+            *table = inner.into_iter().collect();
+        }
+    }
+}
+
+fn write_toml_table(out: &mut String, section_path: &str, table: &toml::map::Map<String, Value>) {
+    out.push_str(&format!("\n[{}]\n", section_path));
+    let mut sorted_keys: Vec<&String> = table.keys().collect();
+    sorted_keys.sort();
+    for key in &sorted_keys {
+        let value = &table[key.as_str()];
+        if !matches!(value, Value::Table(_)) {
+            out.push_str(&format!("{} = {}\n", key, toml_value_to_string(value)));
+        }
+    }
+    for key in &sorted_keys {
+        let value = &table[key.as_str()];
+        if let Value::Table(inner_table) = value {
+            write_toml_table(out, &format!("{}.{}", section_path, key), inner_table);
+        }
+    }
+}
+
 fn parse_value(s: &str) -> toml::Value {
     if let Ok(i) = s.parse::<i64>() {
         toml::Value::Integer(i)
@@ -1322,13 +1404,26 @@ fn toml_value_to_string(value: &toml::Value) -> String {
     match value {
         toml::Value::String(s) => format!("\"{}\"", escape_toml_string(s)),
         toml::Value::Integer(i) => i.to_string(),
-        toml::Value::Float(f) => f.to_string(),
+        toml::Value::Float(f) => {
+            let s = f.to_string();
+            if s.contains('.') || s.contains('e') || s.contains('E') {
+                s
+            } else {
+                format!("{}.0", s)
+            }
+        }
         toml::Value::Boolean(b) => b.to_string(),
         toml::Value::Array(arr) => {
             let items: Vec<String> = arr.iter().map(toml_value_to_string).collect();
             format!("[{}]", items.join(", "))
         }
-        toml::Value::Table(_) => "{}".to_string(),
+        toml::Value::Table(t) => {
+            let items: Vec<String> = t
+                .iter()
+                .map(|(k, v)| format!("{} = {}", k, toml_value_to_string(v)))
+                .collect();
+            format!("{{ {} }}", items.join(", "))
+        }
         toml::Value::Datetime(dt) => format!("\"{}\"", dt),
     }
 }
@@ -1348,4 +1443,633 @@ fn get_allowed_scripts_dir() -> Result<PathBuf, String> {
             path
         })
         .ok_or("Failed to get config directory".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use toml::Value;
+
+    /// Helper: build a device config HashMap that mirrors the example config from the image:
+    ///
+    /// [device.iHR550]
+    /// forced_initialisation = true
+    /// grating = "VIS"
+    /// step_size = 0.1
+    /// initial_wavelength = 500
+    /// final_wavelength = 600
+    ///
+    /// [device.iHR550.slits]
+    /// Entrance_Front = 0.5
+    /// Entrance_Side = 0.0
+    /// Exit_Front = 0.5
+    /// Exit_Side = 0.5
+    ///
+    /// [device.iHR550.mirrors]
+    /// Entrance = "front"
+    /// Exit = "side"
+    fn example_device_config() -> HashMap<String, Value> {
+        let mut config = HashMap::new();
+        config.insert("forced_initialisation".to_string(), Value::Boolean(true));
+        config.insert("grating".to_string(), Value::String("VIS".to_string()));
+        config.insert("step_size".to_string(), Value::Float(0.1));
+        config.insert("initial_wavelength".to_string(), Value::Integer(500));
+        config.insert("final_wavelength".to_string(), Value::Integer(600));
+
+        let mut slits = toml::map::Map::new();
+        slits.insert("Entrance_Front".to_string(), Value::Float(0.5));
+        slits.insert("Entrance_Side".to_string(), Value::Float(0.0));
+        slits.insert("Exit_Front".to_string(), Value::Float(0.5));
+        slits.insert("Exit_Side".to_string(), Value::Float(0.5));
+        config.insert("slits".to_string(), Value::Table(slits));
+
+        let mut mirrors = toml::map::Map::new();
+        mirrors.insert("Entrance".to_string(), Value::String("front".to_string()));
+        mirrors.insert("Exit".to_string(), Value::String("side".to_string()));
+        config.insert("mirrors".to_string(), Value::Table(mirrors));
+
+        config
+    }
+
+    fn example_toml_str() -> &'static str {
+        r#"[experiment.info]
+name = "John Doe"
+email = "test@canterbury.ac.nz"
+experiment_name = "Test Experiment"
+experiment_description = "This is a test experiment"
+
+[device.Test_DAQ]
+gate_time = 1000
+averages = 40
+
+[device.iHR550]
+forced_initialisation = true
+grating = "VIS"
+step_size = 0.1
+initial_wavelength = 500
+final_wavelength = 600
+
+[device.iHR550.slits]
+Entrance_Front = 0.5
+Entrance_Side = 0.0
+Exit_Front = 0.5
+Exit_Side = 0.5
+
+[device.iHR550.mirrors]
+Entrance = "front"
+Exit = "side"
+"#
+    }
+
+    // ---------------------------------------------------------------
+    // flatten_toml_fields
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_flatten_flat_config() {
+        let mut config = HashMap::new();
+        config.insert("gate_time".to_string(), Value::Integer(1000));
+        config.insert("averages".to_string(), Value::Integer(40));
+
+        let mut fields: Vec<(String, String)> = Vec::new();
+        flatten_toml_fields(&config, "", &mut fields);
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0], ("averages".to_string(), "40".to_string()));
+        assert_eq!(fields[1], ("gate_time".to_string(), "1000".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_nested_config() {
+        let config = example_device_config();
+
+        let mut fields: Vec<(String, String)> = Vec::new();
+        flatten_toml_fields(&config, "", &mut fields);
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Should have 5 top-level + 4 slits + 2 mirrors = 11 leaf fields
+        assert_eq!(fields.len(), 11);
+
+        let field_map: HashMap<String, String> = fields.into_iter().collect();
+        assert_eq!(field_map["forced_initialisation"], "true");
+        assert_eq!(field_map["grating"], "VIS");
+        assert_eq!(field_map["step_size"], "0.1");
+        assert_eq!(field_map["initial_wavelength"], "500");
+        assert_eq!(field_map["final_wavelength"], "600");
+        assert_eq!(field_map["slits.Entrance_Front"], "0.5");
+        assert_eq!(field_map["slits.Entrance_Side"], "0");
+        assert_eq!(field_map["slits.Exit_Front"], "0.5");
+        assert_eq!(field_map["slits.Exit_Side"], "0.5");
+        assert_eq!(field_map["mirrors.Entrance"], "front");
+        assert_eq!(field_map["mirrors.Exit"], "side");
+    }
+
+    #[test]
+    fn test_flatten_with_prefix() {
+        let mut config = HashMap::new();
+        config.insert("voltage".to_string(), Value::Float(3.3));
+
+        let mut fields: Vec<(String, String)> = Vec::new();
+        flatten_toml_fields(&config, "sensor", &mut fields);
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].0, "sensor.voltage");
+        assert_eq!(fields[0].1, "3.3");
+    }
+
+    #[test]
+    fn test_flatten_deeply_nested() {
+        let mut inner = toml::map::Map::new();
+        inner.insert("value".to_string(), Value::Integer(42));
+
+        let mut mid = toml::map::Map::new();
+        mid.insert("deep".to_string(), Value::Table(inner));
+
+        let mut config = HashMap::new();
+        config.insert("level1".to_string(), Value::Table(mid));
+
+        let mut fields: Vec<(String, String)> = Vec::new();
+        flatten_toml_fields(&config, "", &mut fields);
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(
+            fields[0],
+            ("level1.deep.value".to_string(), "42".to_string())
+        );
+    }
+
+    #[test]
+    fn test_flatten_empty_table() {
+        let mut config = HashMap::new();
+        config.insert("empty".to_string(), Value::Table(toml::map::Map::new()));
+
+        let mut fields: Vec<(String, String)> = Vec::new();
+        flatten_toml_fields(&config, "", &mut fields);
+
+        // An empty nested table produces no leaf fields
+        assert_eq!(fields.len(), 0);
+    }
+
+    // ---------------------------------------------------------------
+    // set_nested_value
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_set_nested_value_flat_key() {
+        let mut config = HashMap::new();
+        config.insert("grating".to_string(), Value::String("VIS".to_string()));
+
+        set_nested_value(&mut config, "grating", Value::String("NIR".to_string()));
+
+        assert_eq!(config["grating"], Value::String("NIR".to_string()));
+    }
+
+    #[test]
+    fn test_set_nested_value_one_level_deep() {
+        let mut config = example_device_config();
+
+        set_nested_value(&mut config, "slits.Entrance_Front", Value::Float(1.0));
+
+        if let Value::Table(slits) = &config["slits"] {
+            assert_eq!(slits["Entrance_Front"], Value::Float(1.0));
+            // Other slit values should be unchanged
+            assert_eq!(slits["Entrance_Side"], Value::Float(0.0));
+        } else {
+            panic!("Expected slits to remain a Table");
+        }
+    }
+
+    #[test]
+    fn test_set_nested_value_creates_intermediate_tables() {
+        let mut config = HashMap::new();
+        config.insert("grating".to_string(), Value::String("VIS".to_string()));
+
+        set_nested_value(&mut config, "new_section.new_key", Value::Integer(99));
+
+        assert!(config.contains_key("new_section"));
+        if let Value::Table(section) = &config["new_section"] {
+            assert_eq!(section["new_key"], Value::Integer(99));
+        } else {
+            panic!("Expected new_section to be a Table");
+        }
+    }
+
+    #[test]
+    fn test_set_nested_value_deeply_nested_creates_path() {
+        let mut config = HashMap::new();
+
+        set_nested_value(&mut config, "a.b.c", Value::Boolean(true));
+
+        if let Value::Table(a) = &config["a"] {
+            if let Value::Table(b) = &a["b"] {
+                assert_eq!(b["c"], Value::Boolean(true));
+            } else {
+                panic!("Expected b to be a Table");
+            }
+        } else {
+            panic!("Expected a to be a Table");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // write_toml_table
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_write_toml_table_flat() {
+        let mut table = toml::map::Map::new();
+        table.insert("Entrance_Front".to_string(), Value::Float(0.5));
+        table.insert("Exit_Side".to_string(), Value::Float(0.5));
+
+        let mut output = String::new();
+        write_toml_table(&mut output, "device.iHR550.slits", &table);
+
+        assert!(output.contains("[device.iHR550.slits]"));
+        assert!(output.contains("Entrance_Front = 0.5"));
+        assert!(output.contains("Exit_Side = 0.5"));
+    }
+
+    #[test]
+    fn test_write_toml_table_nested() {
+        let mut inner = toml::map::Map::new();
+        inner.insert("value".to_string(), Value::Integer(42));
+
+        let mut table = toml::map::Map::new();
+        table.insert("flat_key".to_string(), Value::Boolean(true));
+        table.insert("nested".to_string(), Value::Table(inner));
+
+        let mut output = String::new();
+        write_toml_table(&mut output, "device.test", &table);
+
+        // Flat keys appear under the parent section
+        assert!(output.contains("[device.test]"));
+        assert!(output.contains("flat_key = true"));
+        // Nested table gets its own section header
+        assert!(output.contains("[device.test.nested]"));
+        assert!(output.contains("value = 42"));
+    }
+
+    #[test]
+    fn test_write_toml_table_keys_sorted() {
+        let mut table = toml::map::Map::new();
+        table.insert("zebra".to_string(), Value::Integer(3));
+        table.insert("alpha".to_string(), Value::Integer(1));
+        table.insert("middle".to_string(), Value::Integer(2));
+
+        let mut output = String::new();
+        write_toml_table(&mut output, "test", &table);
+
+        let alpha_pos = output.find("alpha").unwrap();
+        let middle_pos = output.find("middle").unwrap();
+        let zebra_pos = output.find("zebra").unwrap();
+        assert!(alpha_pos < middle_pos);
+        assert!(middle_pos < zebra_pos);
+    }
+
+    // ---------------------------------------------------------------
+    // format_value / toml_value_to_string
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_format_value_primitives() {
+        assert_eq!(format_value(&Value::String("hello".into())), "hello");
+        assert_eq!(format_value(&Value::Integer(42)), "42");
+        assert_eq!(format_value(&Value::Float(3.14)), "3.14");
+        assert_eq!(format_value(&Value::Boolean(true)), "true");
+    }
+
+    #[test]
+    fn test_format_value_array() {
+        let arr = Value::Array(vec![Value::Integer(1), Value::Integer(2)]);
+        assert_eq!(format_value(&arr), "[1, 2]");
+    }
+
+    #[test]
+    fn test_format_value_table_not_opaque() {
+        let mut table = toml::map::Map::new();
+        table.insert("a".to_string(), Value::Integer(1));
+        let val = Value::Table(table);
+        let result = format_value(&val);
+        // Should NOT be the old "{...}" opaque display
+        assert!(!result.contains("{...}"));
+        assert!(result.contains("a"));
+        assert!(result.contains("1"));
+    }
+
+    #[test]
+    fn test_toml_value_to_string_primitives() {
+        assert_eq!(
+            toml_value_to_string(&Value::String("hello".into())),
+            "\"hello\""
+        );
+        assert_eq!(toml_value_to_string(&Value::Integer(42)), "42");
+        assert_eq!(toml_value_to_string(&Value::Float(3.14)), "3.14");
+        assert_eq!(toml_value_to_string(&Value::Boolean(true)), "true");
+    }
+
+    #[test]
+    fn test_toml_value_to_string_float_serialization() {
+        // Fractional floats already have a decimal point — output unchanged
+        assert_eq!(toml_value_to_string(&Value::Float(2.5)), "2.5");
+        assert_eq!(toml_value_to_string(&Value::Float(0.1)), "0.1");
+        assert_eq!(toml_value_to_string(&Value::Float(3.14)), "3.14");
+
+        // Whole-number floats need ".0" appended to avoid integer reparse
+        assert_eq!(toml_value_to_string(&Value::Float(2.0)), "2.0");
+        assert_eq!(toml_value_to_string(&Value::Float(100.0)), "100.0");
+        assert_eq!(toml_value_to_string(&Value::Float(0.0)), "0.0");
+
+        // Scientific notation is left as-is (already unambiguously float)
+        assert_eq!(toml_value_to_string(&Value::Float(1e10)), "10000000000.0");
+
+        // Round-trip: writing then re-parsing should preserve the float type
+        let val = Value::Float(2.0);
+        let serialized = toml_value_to_string(&val);
+        let toml_str = format!("x = {}", serialized);
+        let parsed: toml::Value = toml::from_str(&toml_str).unwrap();
+        assert!(
+            parsed["x"].is_float(),
+            "Expected float after round-trip of 2.0, got: {:?}",
+            parsed["x"]
+        );
+
+        let val = Value::Float(2.5);
+        let serialized = toml_value_to_string(&val);
+        let toml_str = format!("x = {}", serialized);
+        let parsed: toml::Value = toml::from_str(&toml_str).unwrap();
+        assert!(
+            parsed["x"].is_float(),
+            "Expected float after round-trip of 2.5, got: {:?}",
+            parsed["x"]
+        );
+        assert_eq!(parsed["x"].as_float().unwrap(), 2.5);
+    }
+
+    #[test]
+    fn test_toml_value_to_string_table_not_empty() {
+        let mut table = toml::map::Map::new();
+        table.insert("x".to_string(), Value::Integer(10));
+        let val = Value::Table(table);
+        let result = toml_value_to_string(&val);
+        // Should NOT be the old "{}"
+        assert_ne!(result, "{}");
+        assert!(result.contains("x = 10"));
+    }
+
+    // ---------------------------------------------------------------
+    // parse_value
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_parse_value_integer() {
+        assert_eq!(parse_value("42"), Value::Integer(42));
+        assert_eq!(parse_value("-7"), Value::Integer(-7));
+    }
+
+    #[test]
+    fn test_parse_value_float() {
+        assert_eq!(parse_value("3.14"), Value::Float(3.14));
+        assert_eq!(parse_value("0.5"), Value::Float(0.5));
+    }
+
+    #[test]
+    fn test_parse_value_bool() {
+        assert_eq!(parse_value("true"), Value::Boolean(true));
+        assert_eq!(parse_value("false"), Value::Boolean(false));
+    }
+
+    #[test]
+    fn test_parse_value_string_fallback() {
+        assert_eq!(
+            parse_value("hello world"),
+            Value::String("hello world".to_string())
+        );
+        assert_eq!(parse_value("VIS"), Value::String("VIS".to_string()));
+    }
+
+    // ---------------------------------------------------------------
+    // Round-trip: load config from TOML string -> save to temp file -> re-parse
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_load_nested_config_from_toml_string() {
+        let contents = example_toml_str();
+        let config: Config = toml::from_str(contents).expect("Failed to parse example TOML");
+
+        // Session should be loaded via the "experiment" alias
+        assert!(config.session.is_some());
+        let info = config.session.unwrap().info;
+        assert_eq!(info.name, "John Doe");
+        assert_eq!(info.email, "test@canterbury.ac.nz");
+        assert_eq!(info.session_name, "Test Experiment");
+
+        // Should have two devices
+        assert!(config.device.contains_key("Test_DAQ"));
+        assert!(config.device.contains_key("iHR550"));
+
+        // Test_DAQ has flat config
+        let daq = &config.device["Test_DAQ"].device_config;
+        assert_eq!(daq["gate_time"], Value::Integer(1000));
+        assert_eq!(daq["averages"], Value::Integer(40));
+
+        // iHR550 has nested tables for slits and mirrors
+        let ihr = &config.device["iHR550"].device_config;
+        assert!(matches!(ihr.get("slits"), Some(Value::Table(_))));
+        assert!(matches!(ihr.get("mirrors"), Some(Value::Table(_))));
+        assert_eq!(ihr["forced_initialisation"], Value::Boolean(true));
+    }
+
+    #[test]
+    fn test_state_tab_load_and_flatten_nested_config() {
+        let mut tab = StateTab::new(false);
+        let contents = example_toml_str();
+        let config: Config = toml::from_str(contents).unwrap();
+
+        if let Some(session) = config.session {
+            tab.session_info = Some(session.info);
+            tab.refresh_session_lists();
+        }
+        tab.update_device_configs(
+            config
+                .device
+                .into_iter()
+                .map(|(name, cfg)| (name, cfg.device_config))
+                .collect(),
+        );
+
+        // Select the iHR550 device
+        let ihr_idx = tab
+            .device_names
+            .iter()
+            .position(|n| n == "iHR550")
+            .expect("iHR550 should be in device list");
+        tab.device_list_state.select(Some(ihr_idx));
+        tab.refresh_device_field_lists();
+
+        // Nested fields should be flattened with dot notation
+        assert!(
+            tab.device_field_names
+                .contains(&"slits.Entrance_Front".to_string()),
+            "Expected 'slits.Entrance_Front' in field names, got: {:?}",
+            tab.device_field_names
+        );
+        assert!(
+            tab.device_field_names
+                .contains(&"mirrors.Entrance".to_string()),
+            "Expected 'mirrors.Entrance' in field names, got: {:?}",
+            tab.device_field_names
+        );
+        // Top-level fields should still be present
+        assert!(tab.device_field_names.contains(&"grating".to_string()));
+        assert!(tab.device_field_names.contains(&"step_size".to_string()));
+
+        // Should not have raw "slits" or "mirrors" as a field (they are tables, not leaves)
+        assert!(
+            !tab.device_field_names.contains(&"slits".to_string()),
+            "Nested table 'slits' should be flattened, not shown as a raw field"
+        );
+        assert!(
+            !tab.device_field_names.contains(&"mirrors".to_string()),
+            "Nested table 'mirrors' should be flattened, not shown as a raw field"
+        );
+    }
+
+    #[test]
+    fn test_save_config_round_trip_preserves_nested_tables() {
+        let mut tab = StateTab::new(false);
+        let contents = example_toml_str();
+        let config: Config = toml::from_str(contents).unwrap();
+
+        if let Some(session) = config.session {
+            tab.session_info = Some(session.info);
+            tab.refresh_session_lists();
+        }
+        tab.update_device_configs(
+            config
+                .device
+                .into_iter()
+                .map(|(name, cfg)| (name, cfg.device_config))
+                .collect(),
+        );
+
+        // Save to temp file
+        let temp_path = tab
+            .save_config_to_temp_file()
+            .expect("Should save config to temp file");
+
+        // Re-read and parse the saved file
+        let saved_contents =
+            std::fs::read_to_string(&temp_path).expect("Should read saved temp file");
+
+        // The saved file must contain proper nested TOML sections
+        assert!(
+            saved_contents.contains("[device.iHR550.slits]"),
+            "Saved config should contain [device.iHR550.slits] section.\nGot:\n{}",
+            saved_contents
+        );
+        assert!(
+            saved_contents.contains("[device.iHR550.mirrors]"),
+            "Saved config should contain [device.iHR550.mirrors] section.\nGot:\n{}",
+            saved_contents
+        );
+
+        // The saved file must NOT contain 'slits = {}' or 'mirrors = {}'
+        // (this was the old broken behavior)
+        assert!(
+            !saved_contents.contains("slits = {}"),
+            "Saved config must not flatten nested tables to empty inline tables.\nGot:\n{}",
+            saved_contents
+        );
+
+        // Re-parse the saved TOML to verify it's valid and contains nested data
+        let reparsed: Config =
+            toml::from_str(&saved_contents).expect("Saved config should be valid TOML");
+
+        let ihr = &reparsed.device["iHR550"].device_config;
+        if let Value::Table(slits) = &ihr["slits"] {
+            assert_eq!(slits["Entrance_Front"], Value::Float(0.5));
+            assert_eq!(slits["Exit_Side"], Value::Float(0.5));
+        } else {
+            panic!(
+                "iHR550.slits should be a Table after round-trip, got: {:?}",
+                ihr.get("slits")
+            );
+        }
+
+        if let Value::Table(mirrors) = &ihr["mirrors"] {
+            assert_eq!(mirrors["Entrance"], Value::String("front".to_string()));
+            assert_eq!(mirrors["Exit"], Value::String("side".to_string()));
+        } else {
+            panic!(
+                "iHR550.mirrors should be a Table after round-trip, got: {:?}",
+                ihr.get("mirrors")
+            );
+        }
+
+        // Flat device should also survive
+        let daq = &reparsed.device["Test_DAQ"].device_config;
+        assert_eq!(daq["gate_time"], Value::Integer(1000));
+        assert_eq!(daq["averages"], Value::Integer(40));
+
+        // Clean up
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn test_edit_nested_field_and_round_trip() {
+        let mut tab = StateTab::new(false);
+        let contents = example_toml_str();
+        let config: Config = toml::from_str(contents).unwrap();
+
+        if let Some(session) = config.session {
+            tab.session_info = Some(session.info);
+            tab.refresh_session_lists();
+        }
+        tab.update_device_configs(
+            config
+                .device
+                .into_iter()
+                .map(|(name, cfg)| (name, cfg.device_config))
+                .collect(),
+        );
+
+        // Edit slits.Entrance_Front on iHR550 via set_nested_value
+        if let Some(config) = tab.device_configs.get_mut("iHR550") {
+            set_nested_value(config, "slits.Entrance_Front", Value::Float(2.0));
+        }
+
+        // Verify the nested table was updated correctly
+        if let Some(ihr) = tab.device_configs.get("iHR550") {
+            if let Value::Table(slits) = &ihr["slits"] {
+                assert_eq!(
+                    slits["Entrance_Front"],
+                    Value::Float(2.0),
+                    "Entrance_Front should be updated to 2.0"
+                );
+                // Other values should be untouched
+                assert_eq!(slits["Exit_Front"], Value::Float(0.5));
+            } else {
+                panic!("slits should still be a Table after editing");
+            }
+        }
+
+        // Save and re-parse to confirm the edit persists through round-trip
+        let temp_path = tab
+            .save_config_to_temp_file()
+            .expect("Should save edited config");
+        let saved = std::fs::read_to_string(&temp_path).unwrap();
+        let reparsed: Config = toml::from_str(&saved).expect("Edited config should be valid TOML");
+
+        let ihr = &reparsed.device["iHR550"].device_config;
+        if let Value::Table(slits) = &ihr["slits"] {
+            // After round-trip, 2.0 should remain a float thanks to the ".0" suffix in serialization
+            assert_eq!(slits["Entrance_Front"], Value::Float(2.0));
+        } else {
+            panic!("slits should be a Table after round-trip of edited config");
+        }
+
+        let _ = std::fs::remove_file(&temp_path);
+    }
 }
