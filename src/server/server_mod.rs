@@ -1,27 +1,20 @@
 use crate::cli_tool::run_session;
 use crate::cli_tool::{RunArgs, ServeArgs};
-use crate::data_handler::get_configuration;
+use crate::data_handler::{get_configuration, ServerCommand, SharedSessionController};
 use axum::{
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
-    },
+    extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use futures_util::{SinkExt, StreamExt};
 use log::LevelFilter;
+use serde::Deserialize;
 use serde::Serialize;
-use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use walkdir::WalkDir;
-
-use tokio::net::TcpStream;
 
 use crate::data_handler::configurable_dir_path;
 use tokio::signal::ctrl_c;
@@ -95,75 +88,75 @@ async fn status() -> Result<&'static str, (StatusCode, String)> {
     Ok("Server is up!")
 }
 
-async fn fetch_tcp(state: &AppState, command: &str) -> Result<String, String> {
-    let addr = {
-        let tcp_addr = state.tcp_addr.lock().await;
-        tcp_addr.clone()
-    };
-
-    let stream = TcpStream::connect(&addr)
-        .await
-        .map_err(|e| format!("Failed to connect to {addr}: {e}"))?;
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    let mut response = String::new();
-    let command = command.as_bytes();
-    writer
-        .write_all(command)
-        .await
-        .map_err(|e| format!("Failed to write: {e}"))?;
-
-    reader
-        .read_line(&mut response)
-        .await
-        .map_err(|e| format!("Failed to read: {e}"))?;
-
-    Ok(response.trim().to_string())
+#[derive(Debug, Deserialize)]
+struct StreamQuery {
+    max_data_points: Option<usize>,
 }
 
-async fn fetch_and_parse_json(state: &AppState, command: &str) -> impl IntoResponse {
-    match fetch_tcp(state, command).await {
-        Ok(data) => match serde_json::from_str::<Value>(&data) {
-            Ok(json) => Json(json).into_response(),
-            Err(_) => (
-                StatusCode::BAD_GATEWAY,
-                format!("Received malformed JSON: {data}"),
-            )
-                .into_response(),
-        },
+async fn fetch_and_parse_json(
+    state: &AppState,
+    command: ServerCommand,
+    max_data_points_override: Option<usize>,
+) -> impl IntoResponse {
+    let json = match command {
+        ServerCommand::GetDatastream => state
+            .session_controller
+            .stream_snapshot(max_data_points_override)
+            .await
+            .and_then(|snapshot| serde_json::to_value(snapshot).map_err(|e| e.to_string())),
+        ServerCommand::State => state
+            .session_controller
+            .session_snapshot()
+            .await
+            .and_then(|snapshot| serde_json::to_value(snapshot).map_err(|e| e.to_string())),
+        _ => Err("Command does not return JSON data".to_string()),
+    };
+
+    match json {
+        Ok(json) => Json(json).into_response(),
         Err(e) => (
             StatusCode::BAD_GATEWAY,
-            format!("Error communicating with TCP server: {e}"),
+            format!("Error communicating with active session: {e}"),
         )
             .into_response(),
     }
 }
-async fn fetch(state: &AppState, command: &str) -> impl IntoResponse {
-    match fetch_tcp(state, command).await {
+async fn fetch(state: &AppState, command: ServerCommand) -> impl IntoResponse {
+    let result = match command {
+        ServerCommand::Pause => state.session_controller.pause().await,
+        ServerCommand::Resume => state.session_controller.resume().await,
+        ServerCommand::Kill => state.session_controller.kill().await,
+        _ => Err("Command does not return plain text data".to_string()),
+    };
+
+    match result {
         Ok(data) => (StatusCode::OK, data),
         Err(e) => (
             StatusCode::BAD_GATEWAY,
-            format!("Error communicating with TCP server: {e}"),
+            format!("Error communicating with active session: {e}"),
         ),
     }
 }
-async fn get_data(State(state): State<AppState>) -> impl IntoResponse {
-    fetch_and_parse_json(&state, "GET_DATASTREAM\n").await
+async fn get_data(
+    State(state): State<AppState>,
+    Query(query): Query<StreamQuery>,
+) -> impl IntoResponse {
+    fetch_and_parse_json(&state, ServerCommand::GetDatastream, query.max_data_points).await
 }
 
 async fn server_status(State(state): State<AppState>) -> impl IntoResponse {
-    fetch_and_parse_json(&state, "STATE\n").await
+    fetch_and_parse_json(&state, ServerCommand::State, None).await
 }
 
 async fn pause(State(state): State<AppState>) -> impl IntoResponse {
-    fetch(&state, "PAUSE_STATE\n").await
+    fetch(&state, ServerCommand::Pause).await
 }
 
 async fn resume(State(state): State<AppState>) -> impl IntoResponse {
-    fetch(&state, "RESUME_STATE\n").await
+    fetch(&state, ServerCommand::Resume).await
 }
 async fn kill(State(state): State<AppState>) -> impl IntoResponse {
-    fetch(&state, "KILL\n").await
+    fetch(&state, ServerCommand::Kill).await
 }
 #[derive(Serialize)]
 struct RunResponse {
@@ -176,95 +169,7 @@ struct AppState {
     shutdown_tx: broadcast::Sender<()>,
     log_level: LevelFilter,
     running: Arc<AtomicBool>,
-    tcp_addr: Arc<tokio::sync::Mutex<String>>,
-}
-async fn websocket_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_websocket(socket, state))
-}
-async fn handle_websocket(socket: WebSocket, state: AppState) {
-    let (mut ws_sender, mut ws_receiver) = socket.split();
-
-    log::info!("WebSocket client connected");
-
-    while let Some(msg) = ws_receiver.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
-                log::debug!("Received WebSocket command: {}", text);
-
-                match process_websocket_command(&state, &text).await {
-                    Ok(response) => {
-                        if let Err(e) = ws_sender.send(Message::Text(response.into())).await {
-                            log::error!("Failed to send WebSocket response: {}", e);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Command processing error: {}", e);
-                        let error_msg = format!("ERROR: {}", e);
-                        if let Err(e) = ws_sender.send(Message::Text(error_msg.into())).await {
-                            log::error!("Failed to send error: {}", e);
-                            break;
-                        }
-                    }
-                }
-            }
-            Ok(Message::Close(_)) => {
-                log::info!("WebSocket client disconnected");
-                break;
-            }
-            Ok(Message::Ping(data)) => {
-                if let Err(e) = ws_sender.send(Message::Pong(data)).await {
-                    log::error!("Failed to send pong: {}", e);
-                    break;
-                }
-            }
-            Err(e) => {
-                log::error!("WebSocket error: {}", e);
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    log::info!("WebSocket connection closed");
-}
-
-async fn process_websocket_command(state: &AppState, command: &str) -> Result<String, String> {
-    let tcp_command = match command.trim() {
-        "GET_DATASTREAM" => "GET_DATASTREAM\n",
-        "STATE" => "STATE\n",
-        "KILL" => "KILL\n",
-        "PAUSE_STATE" => "PAUSE_STATE\n",
-        "RESUME_STATE" => "RESUME_STATE\n",
-        other => return Err(format!("Unknown command: {}", other)),
-    };
-    let addr = {
-        let tcp_addr = state.tcp_addr.lock().await;
-        tcp_addr.clone()
-    };
-
-    let stream = TcpStream::connect(&addr)
-        .await
-        .map_err(|e| format!("Failed to connect to TCP backend at {}: {}", addr, e))?;
-
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-
-    writer
-        .write_all(tcp_command.as_bytes())
-        .await
-        .map_err(|e| format!("Failed to write: {}", e))?;
-
-    let mut response = String::new();
-    reader
-        .read_line(&mut response)
-        .await
-        .map_err(|e| format!("Failed to read: {}", e))?;
-
-    Ok(response.trim().to_string())
+    session_controller: SharedSessionController,
 }
 async fn run_handler(
     State(state): State<AppState>,
@@ -272,31 +177,17 @@ async fn run_handler(
     Json(args): Json<RunArgs>,
 ) -> Result<Json<RunResponse>, (StatusCode, String)> {
     let shutdown_tx = state.shutdown_tx.clone();
-    let config_port = match get_configuration() {
-        Ok(conf) => conf.general.port,
-        Err(e) => {
-            log::error!("Failed to get configuration due to: {e}");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to read configuration: {e}"),
-            ));
-        }
-    };
-    let addr = format!("127.0.0.1:{}", args.port.clone().unwrap_or(config_port));
-    {
-        let mut tcp_addr = state.tcp_addr.lock().await;
-        *tcp_addr = addr;
-    }
     let log_level = state.log_level;
     let uuid = Uuid::new_v4();
     let was_running = state.running.swap(true, Ordering::SeqCst);
     match was_running {
         false => {
             let running_clone = state.running.clone();
+            let session_controller = state.session_controller.clone();
 
             tokio::task::spawn(async move {
                 tokio::task::spawn_blocking(move || {
-                    run_session(args, shutdown_tx, log_level, uuid);
+                    run_session(args, shutdown_tx, log_level, uuid, Some(session_controller));
                 })
                 .await
                 .unwrap_or_else(|e| {
@@ -335,7 +226,7 @@ pub async fn run_server(
         shutdown_tx: shutdown_tx.clone(),
         log_level,
         running: Arc::new(AtomicBool::new(false)),
-        tcp_addr: Arc::new(tokio::sync::Mutex::new("0.0.0.0:7676".to_string())),
+        session_controller: SharedSessionController::default(),
     };
 
     let app = Router::new()
@@ -347,7 +238,6 @@ pub async fn run_server(
         .route("/pause", post(pause))
         .route("/continue", post(resume))
         .route("/status_check", get(check_session))
-        .route("/ws", get(websocket_handler))
         .route("/allowed_scripts", get(get_allowed_scripts_list))
         .route("/allowed_output_dirs", get(get_allowed_output_dirs))
         .with_state(state);

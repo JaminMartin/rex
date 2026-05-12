@@ -1,25 +1,17 @@
 use crate::data_handler::data_mod::get_configuration;
+use crate::data_handler::frontend_contract::StreamSnapshot;
 use crate::data_handler::transport::Transport;
-use crate::data_handler::DeviceData;
 use crate::tui_tool::action::Action;
 use crate::tui_tool::tabs::{chart::ChartTab, state::StateTab};
 use crate::tui_tool::theme::AppTheme;
 
 use ratatui::widgets::ListState;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TabView {
     Chart,
     State,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ServerResponse {
-    #[serde(flatten)]
-    pub response: HashMap<String, DeviceData>,
 }
 
 pub struct StreamReference {
@@ -30,6 +22,37 @@ pub struct StreamReference {
 pub struct DataStream {
     pub name: String,
     pub points: Vec<(f64, f64)>,
+}
+
+impl From<StreamSnapshot> for Vec<Device> {
+    fn from(snapshot: StreamSnapshot) -> Self {
+        use itertools::Itertools;
+
+        snapshot
+            .devices
+            .into_iter()
+            .sorted_by_key(|(k, _)| k.clone())
+            .map(|(device_key, device_data)| {
+                let streams = device_data
+                    .measurements
+                    .into_iter()
+                    .sorted_by_key(|(k, _)| k.clone())
+                    .map(|(name, values)| DataStream {
+                        name,
+                        points: values
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, v)| (i as f64, v))
+                            .collect(),
+                    })
+                    .collect();
+                Device {
+                    name: device_key,
+                    streams,
+                }
+            })
+            .collect()
+    }
 }
 
 pub struct Device {
@@ -56,6 +79,7 @@ pub struct App<T: Transport> {
     pub should_quit: bool,
     pub in_rerun: bool,
     pub theme: AppTheme,
+    pub max_data_points_override: Option<usize>,
 }
 
 impl<T: Transport> App<T> {
@@ -96,6 +120,7 @@ impl<T: Transport> App<T> {
             should_quit: false,
             in_rerun: false,
             theme,
+            max_data_points_override: None,
         }
     }
 

@@ -35,7 +35,7 @@ async fn main() {
             });
 
             let cli_thread = thread::spawn(move || {
-                run_session(args, shutdown_tx, log_level, uuid);
+                run_session(args, shutdown_tx, log_level, uuid, None);
             });
 
             if cli_thread.join().is_err() {}

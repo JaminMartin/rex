@@ -34,6 +34,7 @@
         ];
         darwinPackages = pkgs.lib.optionals pkgs.stdenv.isDarwin [
           pkgs.llvmPackages.clang
+          pkgs.libiconv
         ];
       in
       {
@@ -53,8 +54,13 @@
 
           shellHook = ''
             export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${pkgs.zlib}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.openssl}/lib
+            export LIBRARY_PATH=$LIBRARY_PATH:${pkgs.zlib}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.openssl}/lib
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               export PATH=${pkgs.chromium}/bin:$PATH
+            ''}
+            ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+              export LIBRARY_PATH=$LIBRARY_PATH:${pkgs.libiconv}/lib
+              export NIX_LDFLAGS="$NIX_LDFLAGS -L${pkgs.libiconv}/lib"
             ''}
             export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig:$PKG_CONFIG_PATH"
           '';

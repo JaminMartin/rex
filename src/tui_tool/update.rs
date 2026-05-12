@@ -1,9 +1,9 @@
 use crate::data_handler::transport::{Transport, TransportType};
+use crate::data_handler::{SessionSnapshot, StreamSnapshot};
 use crate::tui_tool::action::Action;
-use crate::tui_tool::app::{App, ServerResponse, TabView};
+use crate::tui_tool::app::{App, TabView};
 use crate::tui_tool::tabs::state::StateMode;
 use crate::tui_tool::widgets::file_picker::FilePicker; // ADD THIS
-use itertools::Itertools;
 use std::path::PathBuf;
 pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: Action) {
     match action {
@@ -247,7 +247,7 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
             }
 
             match app.transport.transport_type() {
-                TransportType::Http | TransportType::Ws => {
+                TransportType::Http => {
                     if app.state_tab.loaded_script_path.is_none()
                         && app.state_tab.server_script_path.is_none()
                     {
@@ -341,7 +341,14 @@ fn handle_tick<T: Transport + Clone + Send + 'static>(app: &mut App<T>) {
         TabView::Chart => {
             let tx = app.action_tx.clone();
             let mut transport = app.transport.clone();
+            let max_data_points_override = app.max_data_points_override;
             tokio::spawn(async move {
+                if let Some(http) = transport
+                    .as_any_mut()
+                    .downcast_mut::<crate::server::http_transport::HTTPTransport>()
+                {
+                    http.set_max_data_points_override(max_data_points_override).await;
+                }
                 match transport.send_command("GET_DATASTREAM\n").await {
                     Ok(response) => {
                         let _ = tx.send(Action::ServerDataFetched(Ok(response)));
@@ -385,32 +392,10 @@ fn handle_server_data_fetched<T: Transport>(app: &mut App<T>, response: String) 
             app.session_running = true;
         }
 
-        match serde_json::from_str::<ServerResponse>(&response) {
-            Ok(server_response) => {
-                app.devices = server_response
-                    .response
-                    .into_iter()
-                    .sorted_by_key(|(k, _)| k.clone())
-                    .map(|(device_key, device_data)| {
-                        let streams = device_data
-                            .measurements
-                            .into_iter()
-                            .sorted_by_key(|(k, _)| k.clone())
-                            .map(|(name, values)| crate::tui_tool::app::DataStream {
-                                name,
-                                points: values
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(i, v)| (i as f64, v))
-                                    .collect(),
-                            })
-                            .collect();
-                        crate::tui_tool::app::Device {
-                            name: device_key,
-                            streams,
-                        }
-                    })
-                    .collect();
+        match serde_json::from_str::<StreamSnapshot>(&response) {
+            Ok(snapshot) => {
+                app.session_running = snapshot.session_running;
+                app.devices = snapshot.into();
             }
             Err(e) => {
                 log::warn!("Failed to parse server response: {}", e);
@@ -437,7 +422,10 @@ fn handle_state_data_fetched<T: Transport>(app: &mut App<T>, response: String) {
             log::info!("Session detected as running");
             app.session_running = true;
         }
-        let _ = app.state_tab.update_from_json(&response);
+        match serde_json::from_str::<SessionSnapshot>(&response) {
+            Ok(snapshot) => app.state_tab.update_from_snapshot(snapshot),
+            Err(e) => log::warn!("Failed to parse state response: {}", e),
+        }
     } else {
         if app.session_running {
             log::info!("Session ended");
@@ -469,7 +457,7 @@ async fn resume_server<T: Transport>(transport: &mut T) {
 
 fn handle_start_new_run<T: Transport + Clone + Send + 'static>(app: &mut App<T>) {
     let run_args_result = match app.transport.transport_type() {
-        TransportType::Http | TransportType::Ws => app.state_tab.build_http_run_args(),
+        TransportType::Http => app.state_tab.build_http_run_args(),
         TransportType::Tcp => app.state_tab.build_run_args(),
     };
 

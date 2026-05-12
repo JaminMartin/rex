@@ -1,6 +1,7 @@
 use crate::data_handler::configurable_dir_path;
+use crate::data_handler::frontend_contract::SessionSnapshot;
 use crate::data_handler::transport::TransportType;
-use crate::data_handler::{SessionInfo, SessionMetadata, Summary};
+use crate::data_handler::{SessionInfo, SessionMetadata};
 
 use crate::tui_tool::theme::AppTheme;
 use crate::tui_tool::widgets::file_picker::FilePicker;
@@ -327,17 +328,15 @@ impl StateTab {
         Ok(())
     }
 
-    pub fn update_from_json(&mut self, json: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let summary: Summary = serde_json::from_str(json)?;
-        self.session_info = Some(summary.entities.info);
-        self.update_device_configs(summary.devices);
+    pub fn update_from_snapshot(&mut self, snapshot: SessionSnapshot) {
+        self.session_info = Some(snapshot.session_info);
+        self.update_device_configs(snapshot.devices);
 
-        if !summary.run_file.is_empty() {
-            self.server_script_path = Some(summary.run_file);
+        if !snapshot.run_file.is_empty() {
+            self.server_script_path = Some(snapshot.run_file);
         }
 
         self.refresh_session_lists();
-        Ok(())
     }
 
     pub fn update_device_configs(&mut self, configs: HashMap<String, HashMap<String, Value>>) {

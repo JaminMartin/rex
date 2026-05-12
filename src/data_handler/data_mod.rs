@@ -30,8 +30,44 @@ pub struct GeneralConfig {
     pub interpreter: String,
     pub validations: Option<Vec<String>>,
     pub subsampling: Option<bool>,
+    pub max_data_points: Option<usize>,
     pub allowed_output_dirs: Option<Vec<String>>,
     pub theme: Option<String>,
+}
+
+fn apply_config_env_overrides(config: &mut Configuration) {
+    if let Ok(port) = env::var("REX_PORT_OVERRIDE") {
+        if !port.trim().is_empty() {
+            config.general.port = port;
+        }
+    }
+
+    if let Ok(interpreter) = env::var("REX_INTERPRETER") {
+        if !interpreter.trim().is_empty() {
+            config.general.interpreter = interpreter;
+        }
+    }
+
+    if let Ok(theme) = env::var("REX_THEME") {
+        if !theme.trim().is_empty() {
+            config.general.theme = Some(theme);
+        }
+    }
+
+    if let Ok(subsampling) = env::var("REX_SUBSAMPLING") {
+        match subsampling.trim().parse::<bool>() {
+            Ok(value) => config.general.subsampling = Some(value),
+            Err(e) => log::warn!("Ignoring invalid REX_SUBSAMPLING value: {e}"),
+        }
+    }
+
+    if let Ok(max_data_points) = env::var("REX_MAX_DATA_POINTS") {
+        match max_data_points.trim().parse::<usize>() {
+            Ok(value) if value > 0 => config.general.max_data_points = Some(value),
+            Ok(_) => log::warn!("Ignoring invalid REX_MAX_DATA_POINTS value: must be > 0"),
+            Err(e) => log::warn!("Ignoring invalid REX_MAX_DATA_POINTS value: {e}"),
+        }
+    }
 }
 impl Configuration {
     pub fn get_allowed_output_dirs(&self) -> Vec<PathBuf> {
@@ -154,7 +190,7 @@ impl Default for DataSession {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct SessionInfo {
     pub name: String,
     pub email: String,
@@ -168,7 +204,7 @@ pub struct SessionInfo {
     pub session_description: String,
     pub meta: Option<SessionMetadata>,
 }
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct SessionMetadata {
     #[serde(flatten)]
     pub meta: HashMap<String, Value>,
@@ -206,7 +242,7 @@ pub struct Device {
     #[serde(default)]
     pub timestamps: HashMap<String, Vec<String>>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct DeviceData {
     pub device_name: String,
     pub measurements: HashMap<String, Vec<f64>>,
@@ -654,6 +690,7 @@ pub struct ServerState {
     pub internal_state: bool,
     pub retention: bool,
     pub subsampling: bool,
+    pub max_data_points: usize,
     pub uuid: Uuid,
     pub external_metadata: Option<HashMap<String, Value>>,
     pub run_file: String,
@@ -666,13 +703,20 @@ pub struct Summary {
 }
 
 impl ServerState {
-    pub fn new(uuid: Uuid, external_metadata: String, run_file: String, subsampling: bool) -> Self {
+    pub fn new(
+        uuid: Uuid,
+        external_metadata: String,
+        run_file: String,
+        subsampling: bool,
+        max_data_points: usize,
+    ) -> Self {
         let external_metadata = parse_external_metadata(external_metadata);
         ServerState {
             entities: HashMap::new(),
             internal_state: true,
             retention: true,
             subsampling: subsampling,
+            max_data_points,
             uuid,
             external_metadata,
             run_file,
@@ -704,6 +748,28 @@ impl ServerState {
             devices: device_configs,
             run_file: runfile,
         })
+    }
+
+    pub fn get_session_info(&self) -> Option<&DataSession> {
+        self.entities.values().find_map(|entity| {
+            if let Entity::Session(data_session) = entity {
+                Some(data_session)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn device_configs(&self) -> HashMap<String, HashMap<String, Value>> {
+        self.entities
+            .iter()
+            .filter_map(|(_, entity)| match entity {
+                Entity::Device(device) => {
+                    Some((device.device_name.clone(), device.device_config.clone()))
+                }
+                Entity::Session(_) => None,
+            })
+            .collect()
     }
     pub fn update_entity(&mut self, key: String, incoming: Entity) {
         match incoming {
@@ -1040,14 +1106,15 @@ impl ServerState {
         Ok(())
     }
 
-    pub fn send_stream(&self) -> HashMap<String, DeviceData> {
+    pub fn send_stream(&self, max_data_points_override: Option<usize>) -> HashMap<String, DeviceData> {
+        let max_data_points = max_data_points_override.unwrap_or(self.max_data_points);
         let mut stream_contents = HashMap::new();
         for entity in self.entities.values() {
             match entity {
                 Entity::Device(device) => {
                     stream_contents.insert(
                         device.device_name.clone(),
-                        device.latest_data_truncated(100, self.subsampling),
+                        device.latest_data_truncated(max_data_points, self.subsampling),
                     );
                 }
                 Entity::Session(_session) => {}
@@ -1062,7 +1129,7 @@ impl Default for ServerState {
         let uuid = Uuid::new_v4();
         let external_metadata = "".to_string();
         let runfile = "".to_string();
-        Self::new(uuid, external_metadata, runfile, true)
+        Self::new(uuid, external_metadata, runfile, true, 100)
     }
 }
 pub fn sanitize_filename(name: String) -> String {
@@ -1115,13 +1182,16 @@ fn div_ceil(a: usize, b: usize) -> usize {
 }
 
 pub fn get_configuration() -> Result<Configuration, String> {
-    let config_path = configurable_dir_path("XDG_CONFIG_HOME", dirs::config_dir)
-        .map(|mut path| {
-            path.push("rex");
-            path.push("config.toml");
-            path
-        })
-        .ok_or("Failed to get config directory, setup your config directory then run rex");
+    let config_path = match env::var("REX_CONFIG_PATH") {
+        Ok(path) if !path.trim().is_empty() => Ok(PathBuf::from(path)),
+        _ => configurable_dir_path("XDG_CONFIG_HOME", dirs::config_dir)
+            .map(|mut path| {
+                path.push("rex");
+                path.push("config.toml");
+                path
+            })
+            .ok_or("Failed to get config directory, setup your config directory then run rex"),
+    };
     let conf = match config_path {
         Ok(path) => path,
         Err(res) => {
@@ -1138,7 +1208,7 @@ pub fn get_configuration() -> Result<Configuration, String> {
             return Err(e.to_string());
         }
     };
-    let rex_configuration: Configuration = match contents {
+    let mut rex_configuration: Configuration = match contents {
         Ok(config) => config,
         Err(e) => {
             log::error!("Could not read config.toml file, raised the following error: {e}");
@@ -1146,6 +1216,8 @@ pub fn get_configuration() -> Result<Configuration, String> {
             return Err(e.to_string());
         }
     };
+
+    apply_config_env_overrides(&mut rex_configuration);
 
     Ok(rex_configuration)
 }
@@ -1206,6 +1278,23 @@ fn validate_session_metadata(session: &SessionInfo, validations: &[String]) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::NamedTempFile;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn clear_config_env_vars() {
+        unsafe {
+            env::remove_var("REX_CONFIG_PATH");
+            env::remove_var("REX_PORT_OVERRIDE");
+            env::remove_var("REX_INTERPRETER");
+            env::remove_var("REX_THEME");
+            env::remove_var("REX_SUBSAMPLING");
+        }
+    }
 
     fn create_test_device(name: &str) -> Device {
         Device {
@@ -1221,6 +1310,71 @@ mod tests {
             data,
             unit: unit.to_string(),
         }
+    }
+
+    #[test]
+    fn test_get_configuration_supports_rex_config_path_override() {
+        let _guard = env_lock().lock().unwrap();
+        clear_config_env_vars();
+
+        let file = NamedTempFile::new().unwrap();
+        fs::write(
+            file.path(),
+            r#"
+[general]
+port = "9001"
+interpreter = "/tmp/interpreter"
+subsampling = true
+theme = "dracula"
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            env::set_var("REX_CONFIG_PATH", file.path());
+        }
+
+        let config = get_configuration().unwrap();
+        assert_eq!(config.general.port, "9001");
+        assert_eq!(config.general.interpreter, "/tmp/interpreter");
+        assert_eq!(config.general.subsampling, Some(true));
+
+        clear_config_env_vars();
+    }
+
+    #[test]
+    fn test_get_configuration_applies_env_field_overrides() {
+        let _guard = env_lock().lock().unwrap();
+        clear_config_env_vars();
+
+        let file = NamedTempFile::new().unwrap();
+        fs::write(
+            file.path(),
+            r#"
+[general]
+port = "7676"
+interpreter = "python3"
+subsampling = true
+theme = "dracula"
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            env::set_var("REX_CONFIG_PATH", file.path());
+            env::set_var("REX_PORT_OVERRIDE", "8123");
+            env::set_var("REX_INTERPRETER", "rust-script");
+            env::set_var("REX_THEME", "tokyo-night");
+            env::set_var("REX_SUBSAMPLING", "false");
+        }
+
+        let config = get_configuration().unwrap();
+        assert_eq!(config.general.port, "8123");
+        assert_eq!(config.general.interpreter, "rust-script");
+        assert_eq!(config.general.theme.as_deref(), Some("tokyo-night"));
+        assert_eq!(config.general.subsampling, Some(false));
+
+        clear_config_env_vars();
     }
 
     #[test]

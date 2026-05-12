@@ -1,6 +1,7 @@
 use crate::data_handler::transport::{Transport, TransportType};
 use crate::data_handler::{
-    create_log_timestamp, sanitize_filename, DataSession, Device, Entity, Listner, ServerState,
+    create_log_timestamp, sanitize_filename, DataSession, Device, Entity, Listner,
+    ServerCommand, ServerState, SessionController,
 };
 use crate::db::ClickhouseServer;
 use clickhouse::Client;
@@ -101,49 +102,36 @@ async fn handle_command(
     state: &Arc<Mutex<ServerState>>,
     shutdown_tx: &broadcast::Sender<()>,
 ) -> bool {
-    match message {
-        "GET_DATASTREAM" => {
-            let state = state.lock().await;
-            let steam_data = state.send_stream();
-            if let Ok(state_json) = serde_json::to_string(&steam_data) {
-                let _ = writer.write_all(format!("{state_json}\n").as_bytes()).await;
-            }
-            true
+    let command = match ServerCommand::parse(message) {
+        Ok(command) => command,
+        Err(_) => return false,
+    };
+
+    let controller = SessionController::new(Arc::clone(state), shutdown_tx.clone());
+    let response = match command {
+        ServerCommand::GetDatastream => serde_json::to_string(&controller.stream_snapshot(None).await)
+            .map_err(|e| format!("Failed to serialize datastream: {e}")),
+        ServerCommand::State => match controller.session_snapshot().await {
+            Ok(snapshot) => serde_json::to_string(&snapshot)
+                .map_err(|e| format!("Failed to serialize summary: {e}")),
+            Err(error) => Err(error),
+        },
+        ServerCommand::Pause => Ok(controller.pause().await),
+        ServerCommand::Resume => Ok(controller.resume().await),
+        ServerCommand::Kill => Ok(controller.kill().await),
+    };
+
+    match response {
+        Ok(response) => {
+            let _ = writer.write_all(format!("{response}\n").as_bytes()).await;
         }
-        "STATE" => {
-            let state = state.lock().await;
-            if let Some(summary) = state.to_summary() {
-                if let Ok(state_json) = serde_json::to_string(&summary) {
-                    let _ = writer.write_all(format!("{state_json}\n").as_bytes()).await;
-                }
-            }
-            true
-        }
-        "PAUSE_STATE" => {
+        Err(error) => {
             let _ = writer
-                .write_all(b"Setting internal server state to paused...\n")
+                .write_all(format!("ERROR: {error}\n").as_bytes())
                 .await;
-            let mut state = state.lock().await;
-            state.internal_state = false;
-            log::info!("setting server state to paused....");
-            true
         }
-        "KILL" => {
-            let _ = writer.write_all(b"Shutting down server...\n").await;
-            log::info!("Received remote termination command, shutting down server");
-            let _ = shutdown_tx.send(());
-            true
-        }
-        "RESUME_STATE" => {
-            let _ = writer
-                .write_all(b"Setting internal server state to start...\n")
-                .await;
-            let mut state = state.lock().await;
-            state.internal_state = true;
-            true
-        }
-        _ => false, // Not a command
     }
+    true
 }
 
 async fn handle_entity(
@@ -525,7 +513,13 @@ impl Transport for TCPTransport {
 
         let handle = std::thread::spawn(move || {
             log::info!("Rerun session thread started");
-            crate::cli_tool::run_session(args, shutdown_tx_clone, log::LevelFilter::Info, uuid);
+            crate::cli_tool::run_session(
+                args,
+                shutdown_tx_clone,
+                log::LevelFilter::Info,
+                uuid,
+                None,
+            );
             log::info!("Rerun session thread completed");
         });
 

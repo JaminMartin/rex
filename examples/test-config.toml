@@ -1,0 +1,5 @@
+[general]
+port = "7676"
+interpreter = "rust-script"
+subsampling = true
+theme = "dracula"

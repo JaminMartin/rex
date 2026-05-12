@@ -13,6 +13,7 @@ struct HTTPTransportInner {
     client: reqwest::Client,
     last_session_check: Option<std::time::Instant>,
     has_active_session: bool,
+    max_data_points_override: Option<usize>,
 }
 
 impl HTTPTransport {
@@ -38,8 +39,13 @@ impl HTTPTransport {
                 client,
                 last_session_check: None,
                 has_active_session: false,
+                max_data_points_override: None,
             })),
         }
+    }
+    pub async fn set_max_data_points_override(&self, max_data_points: Option<usize>) {
+        let mut inner = self.inner.lock().await;
+        inner.max_data_points_override = max_data_points.filter(|value| *value > 0);
     }
     pub async fn get_allowed_output_dirs(
         &self,
@@ -164,6 +170,14 @@ impl Transport for HTTPTransport {
         };
 
         let url = format!("{}/{}", inner.base_url, endpoint);
+        let url = if endpoint == "datastream" {
+            match inner.max_data_points_override {
+                Some(max_data_points) => format!("{}?max_data_points={}", url, max_data_points),
+                None => url,
+            }
+        } else {
+            url
+        };
 
         let is_post = matches!(endpoint, "kill" | "pause" | "continue");
 

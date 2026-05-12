@@ -1,6 +1,7 @@
 use crate::data_handler::transport::TransportImpl;
 use crate::data_handler::{
     create_time_stamp, get_configuration, DataSession, ServerState, SessionInfo,
+    SessionController, SharedSessionController,
 };
 use crate::mail_handler::mailer;
 use crate::server::http_transport::HTTPTransport;
@@ -204,6 +205,7 @@ pub fn run_session(
     shutdown_tx: broadcast::Sender<()>,
     log_level: LevelFilter,
     uuid: Uuid,
+    shared_controller: Option<SharedSessionController>,
 ) {
     log::info!("Session starting in {} s", args.delay * 60);
 
@@ -230,8 +232,11 @@ pub fn run_session(
             let script_path_clone = Arc::clone(&script_path);
             let script_path_str = script_path_clone.as_ref().to_string_lossy().into_owned();
             log::info!("Server is starting...");
-            let subsampling = match get_configuration() {
-                Ok(configuration) => configuration.general.subsampling.unwrap_or(true),
+            let (subsampling, max_data_points) = match get_configuration() {
+                Ok(configuration) => (
+                    configuration.general.subsampling.unwrap_or(true),
+                    configuration.general.max_data_points.unwrap_or(100),
+                ),
                 Err(e) => {
                     log::error!("failed to get configuration due to: {e}");
                     return;
@@ -242,7 +247,15 @@ pub fn run_session(
                 additional_metadata.clone(),
                 script_path_str,
                 subsampling,
+                max_data_points,
             )));
+
+            if let Some(ref shared_controller) = shared_controller {
+                shared_controller.set(SessionController::new(
+                    Arc::clone(&state),
+                    shutdown_tx.clone(),
+                ));
+            }
 
             let shutdown_rx_tcp = shutdown_tx.subscribe();
             let shutdown_rx_server_satus = shutdown_tx.subscribe();
@@ -542,6 +555,10 @@ pub fn run_session(
                     }
                 }
             };
+
+            if let Some(ref shared_controller) = shared_controller {
+                shared_controller.clear();
+            }
         }
     } else {
         log::error!("No interpreter path found in the arguments");

@@ -26,7 +26,6 @@ pub trait Transport: Clone + Send + Sync + 'static {
 pub enum TransportType {
     Http,
     Tcp,
-    Ws,
 }
 
 #[derive(Clone)]
