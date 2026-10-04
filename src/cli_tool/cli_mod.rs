@@ -1,12 +1,11 @@
 use crate::data_handler::transport::TransportImpl;
 use crate::data_handler::{
     create_time_stamp, get_configuration, DataSession, ServerState, SessionInfo,
-    SessionController, SharedSessionController,
+    SharedSessionController,
 };
 use crate::mail_handler::mailer;
-use crate::server::http_transport::HTTPTransport;
+use crate::server::ws_transport::WsTransport;
 
-use crate::tcp_handler::TCPTransport;
 use crate::tcp_handler::{save_state, send_to_clickhouse, server_status, start_tcp_server};
 use crate::tui_tool::run_tui;
 
@@ -23,6 +22,7 @@ use std::io;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
@@ -149,6 +149,10 @@ pub struct RunArgs {
     #[arg(short, long)]
     #[serde(default = "default_interactive")]
     pub interactive: bool,
+    /// Loopback HTTP/WebSocket control-plane port exposed for this local run.
+    #[arg(long, default_value_t = 9000)]
+    #[serde(default = "default_control_port")]
+    pub control_port: u32,
     /// Port overide, allows for overiding default port. Will export this as environment variable for devices to utilise.
     #[arg(short = 'P', long)]
     pub port: Option<String>,
@@ -173,20 +177,24 @@ const fn default_loops() -> u8 {
 const fn default_interactive() -> bool {
     false
 }
+const fn default_control_port() -> u32 { 9000 }
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum NetworkBackend {
     Http,
+    /// Deprecated: TCP is reserved for experiment-script data ingestion and
+    /// is no longer a supported TUI control backend.
     Tcp,
 }
 /// A commandline DAQ viewer
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct StandaloneArgs {
-    /// Address of the running rex instance (e.g. 192.168.1.10:7676)
+    /// Address of the rex HTTP control plane (e.g. 127.0.0.1:9000)
     #[arg(value_name = "ADDRESS")]
     address: String,
-    /// Network backend to use for connecting to the rex instance
-    #[arg(short, long, default_value = "tcp")]
+    /// Network backend to use for connecting to the rex instance. HTTP is the
+    /// supported control plane; TCP is accepted only to print a migration hint.
+    #[arg(short, long, default_value = "http")]
     backend: NetworkBackend,
 }
 
@@ -194,6 +202,10 @@ pub struct StandaloneArgs {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct ServeArgs {
+    /// Interface to bind the HTTP/WebSocket server to. Defaults to loopback so
+    /// browser control remains local unless remote access is explicitly requested.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
     /// Port to listen on for the HTTP API server
     #[arg(short, long, default_value_t = 9000)]
     pub port: u32,
@@ -207,6 +219,11 @@ pub fn run_session(
     uuid: Uuid,
     shared_controller: Option<SharedSessionController>,
 ) {
+    // `rex serve` already owns a long-lived control plane. A direct `rex run`
+    // owns a short-lived loopback one so every local run has the same HTTP/WS
+    // viewing path as `serve`.
+    let owns_control_plane = shared_controller.is_none();
+    let shared_controller = shared_controller.unwrap_or_default();
     log::info!("Session starting in {} s", args.delay * 60);
 
     sleep(Duration::from_secs(&args.delay * 60));
@@ -232,11 +249,8 @@ pub fn run_session(
             let script_path_clone = Arc::clone(&script_path);
             let script_path_str = script_path_clone.as_ref().to_string_lossy().into_owned();
             log::info!("Server is starting...");
-            let (subsampling, max_data_points) = match get_configuration() {
-                Ok(configuration) => (
-                    configuration.general.subsampling.unwrap_or(true),
-                    configuration.general.max_data_points.unwrap_or(100),
-                ),
+            let stream_projection = match get_configuration() {
+                Ok(configuration) => configuration.general.stream_projection_config(),
                 Err(e) => {
                     log::error!("failed to get configuration due to: {e}");
                     return;
@@ -246,16 +260,33 @@ pub fn run_session(
                 uuid,
                 additional_metadata.clone(),
                 script_path_str,
-                subsampling,
-                max_data_points,
+                stream_projection,
             )));
 
-            if let Some(ref shared_controller) = shared_controller {
-                shared_controller.set(SessionController::new(
-                    Arc::clone(&state),
-                    shutdown_tx.clone(),
-                ));
-            }
+            let session_controller = shared_controller
+                .new_session_controller(Arc::clone(&state), shutdown_tx.clone());
+            shared_controller.set(session_controller.clone());
+            let controller_for_tcp = session_controller.clone();
+            let control_plane = if owns_control_plane {
+                let control_shutdown = shutdown_tx.clone();
+                let control_shutdown_rx = shutdown_tx.subscribe();
+                let control_sessions = shared_controller.clone();
+                let control_port = args.control_port;
+                Some(thread::spawn(move || {
+                    let runtime = tokio::runtime::Runtime::new().expect("control-plane runtime");
+                    runtime.block_on(crate::server::run_control_plane(
+                        "127.0.0.1".to_string(),
+                        control_port,
+                        control_shutdown,
+                        control_shutdown_rx,
+                        log_level,
+                        control_sessions,
+                        Arc::new(AtomicBool::new(true)),
+                    ));
+                }))
+            } else {
+                None
+            };
 
             let shutdown_rx_tcp = shutdown_tx.subscribe();
             let shutdown_rx_server_satus = shutdown_tx.subscribe();
@@ -265,7 +296,6 @@ pub fn run_session(
             let shutdown_tx_logger = shutdown_tx.clone();
             let shutdown_tx_clone_tcp = shutdown_tx.clone();
 
-            let tcp_state = Arc::clone(&state);
             let server_state = Arc::clone(&state);
             let server_state_ch = Arc::clone(&state);
 
@@ -313,7 +343,6 @@ pub fn run_session(
             env::set_var("REX_UUID", uuid.to_string());
 
             let tui_thread = if args.interactive {
-                let port_tui = port.clone();
                 Some(thread::spawn(move || {
                     let rt = match tokio::runtime::Runtime::new() {
                         Ok(rt) => rt,
@@ -323,8 +352,8 @@ pub fn run_session(
                         }
                     };
                     let remote = false;
-                    let addr = format!("127.0.0.1:{port_tui}");
-                    let transport = TCPTransport::new(&addr);
+                    let addr = format!("127.0.0.1:{}", args.control_port);
+                    let transport = WsTransport::new(&addr);
 
                     match rt.block_on(run_tui(transport, remote)) {
                         Ok(_) => log::info!("TUI closed successfully"),
@@ -344,12 +373,16 @@ pub fn run_session(
                         return;
                     }
                 };
-                rt.block_on(start_tcp_server(
-                    addr,
-                    tcp_state,
-                    shutdown_rx_tcp,
-                    shutdown_tx_clone_tcp,
-                ))
+                rt.block_on(async move {
+                    controller_for_tcp.publish_started().await;
+                    start_tcp_server(
+                        addr,
+                        controller_for_tcp,
+                        shutdown_rx_tcp,
+                        shutdown_tx_clone_tcp,
+                    )
+                    .await
+                })
                 .unwrap();
             });
 
@@ -556,9 +589,15 @@ pub fn run_session(
                 }
             };
 
-            if let Some(ref shared_controller) = shared_controller {
-                shared_controller.clear();
+            if let Some(control_plane) = control_plane {
+                let _ = control_plane.join();
             }
+
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                rt.block_on(session_controller.publish_finished());
+            }
+
+            shared_controller.clear();
         }
     } else {
         log::error!("No interpreter path found in the arguments");
@@ -666,6 +705,13 @@ async fn start_interpreter_process_async(
 pub fn cli_standalone(args: StandaloneArgs, log_level: LevelFilter) {
     let _ = tui_logger::init_logger(log_level);
 
+    if matches!(args.backend, NetworkBackend::Tcp) {
+        log::error!(
+            "The TCP viewer backend has been deprecated. Use `rex view --backend http ADDRESS` (or omit --backend). TCP remains available only for experiment-script data ingestion."
+        );
+        return;
+    }
+
     let tui_thread = Some(thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
@@ -674,11 +720,11 @@ pub fn cli_standalone(args: StandaloneArgs, log_level: LevelFilter) {
                 return;
             }
         };
-        let remote = true;
-        let transport = match args.backend {
-            NetworkBackend::Http => TransportImpl::Http(HTTPTransport::new(&args.address)),
-            NetworkBackend::Tcp => TransportImpl::Tcp(TCPTransport::new(&args.address)),
-        };
+        let remote = !is_loopback_control_address(&args.address);
+        // Viewer data arrives through the shared WebSocket event stream.  Its
+        // HTTP companion is used only for control mutations such as pause,
+        // kill, and starting a new run.
+        let transport = TransportImpl::WebSocket(WsTransport::new(&args.address));
         match rt.block_on(run_tui(transport, remote)) {
             Ok(_) => log::info!("TUI closed successfully"),
             Err(e) => log::error!("TUI encountered an error: {e}"),
@@ -700,6 +746,18 @@ pub fn cli_standalone(args: StandaloneArgs, log_level: LevelFilter) {
             }
         }
     };
+}
+
+fn is_loopback_control_address(address: &str) -> bool {
+    let address = address
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let host = address
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']').map(|(host, _)| host))
+        .unwrap_or_else(|| address.split(':').next().unwrap_or(address));
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 pub fn process_args(original_args: Vec<String>) -> Vec<String> {

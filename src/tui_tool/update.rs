@@ -12,20 +12,24 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
         }
 
         Action::ServerDataFetched(Ok(response)) => {
+            app.finish_poll();
             handle_server_data_fetched(app, response);
         }
 
         Action::ServerDataFetched(Err(e)) => {
+            app.finish_poll();
             let err = std::io::Error::new(std::io::ErrorKind::Other, e);
             app.handle_transport_error(&err);
             app.session_running = false;
         }
 
         Action::StateDataFetched(Ok(response)) => {
+            app.finish_poll();
             handle_state_data_fetched(app, response);
         }
 
         Action::StateDataFetched(Err(e)) => {
+            app.finish_poll();
             let err = std::io::Error::new(std::io::ErrorKind::Other, e);
             app.handle_transport_error(&err);
             app.session_running = false;
@@ -66,7 +70,7 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
             StateMode::PickingConfig => {
                 let needs_remote_fetch = app
                     .state_tab
-                    .handle_file_picker_key(key, app.transport.transport_type());
+                    .handle_file_picker_key(key, app.state_tab.remote);
 
                 if needs_remote_fetch {
                     let tx = app.action_tx.clone();
@@ -94,7 +98,7 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
             StateMode::PickingScript => {
                 let _ = app
                     .state_tab
-                    .handle_file_picker_key(key, app.transport.transport_type());
+                    .handle_file_picker_key(key, app.state_tab.remote);
             }
             StateMode::PickingOutputDir => {
                 if let Some(ref mut picker) = app.state_tab.file_picker {
@@ -112,7 +116,7 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
                         _ => {
                             let _ = app
                                 .state_tab
-                                .handle_file_picker_key(key, app.transport.transport_type());
+                                .handle_file_picker_key(key, app.state_tab.remote);
                         }
                     }
                 }
@@ -120,7 +124,7 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
             _ => {
                 let _ = app
                     .state_tab
-                    .handle_file_picker_key(key, app.transport.transport_type());
+                    .handle_file_picker_key(key, app.state_tab.remote);
             }
         },
 
@@ -247,7 +251,7 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
             }
 
             match app.transport.transport_type() {
-                TransportType::Http => {
+                TransportType::Http | TransportType::WebSocket => {
                     if app.state_tab.loaded_script_path.is_none()
                         && app.state_tab.server_script_path.is_none()
                     {
@@ -322,6 +326,13 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
                         }
                     }
 
+                    if let Some(websocket) = transport
+                        .as_any_mut()
+                        .downcast_mut::<crate::server::ws_transport::WsTransport>()
+                    {
+                        websocket.cleanup_local_rerun().await;
+                    }
+
                     if !remote {
                         kill_server(&mut transport).await;
                     }
@@ -339,6 +350,9 @@ pub fn update<T: Transport + Clone + Send + 'static>(app: &mut App<T>, action: A
 fn handle_tick<T: Transport + Clone + Send + 'static>(app: &mut App<T>) {
     match app.active_tab {
         TabView::Chart => {
+            if !app.begin_poll(app.transport.transport_type()) {
+                return;
+            }
             let tx = app.action_tx.clone();
             let mut transport = app.transport.clone();
             let max_data_points_override = app.max_data_points_override;
@@ -360,7 +374,7 @@ fn handle_tick<T: Transport + Clone + Send + 'static>(app: &mut App<T>) {
             });
         }
         TabView::State => {
-            if app.connection_status {
+            if app.begin_poll(app.transport.transport_type()) {
                 let tx = app.action_tx.clone();
                 let mut transport = app.transport.clone();
                 tokio::spawn(async move {
@@ -457,8 +471,15 @@ async fn resume_server<T: Transport>(transport: &mut T) {
 
 fn handle_start_new_run<T: Transport + Clone + Send + 'static>(app: &mut App<T>) {
     let run_args_result = match app.transport.transport_type() {
-        TransportType::Http => app.state_tab.build_http_run_args(),
-        TransportType::Tcp => app.state_tab.build_run_args(),
+        // The WebSocket transport is created only by local `rex run
+        // --interactive`; it uses the loopback control plane for live events
+        // but must preserve the TUI's trusted local-file run workflow.
+        TransportType::Http if app.state_tab.remote => app.state_tab.build_http_run_args(),
+        // A loopback HTTP control plane and the interactive WebSocket control
+        // plane both represent the same trusted local-user workflow.
+        TransportType::Http | TransportType::Tcp | TransportType::WebSocket => {
+            app.state_tab.build_run_args()
+        }
     };
 
     match run_args_result {

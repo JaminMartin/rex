@@ -3,6 +3,57 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use toml::Value;
 
+pub const LIVE_PROTOCOL_VERSION: u16 = 1;
+
+/// Messages a live client may send after opening `/ws`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientMessage {
+    Subscribe {
+        projection: Option<crate::data_handler::StreamProjectionConfig>,
+    },
+    Ping,
+}
+
+/// Versioned, server-originated messages shared by terminal and browser clients.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ServerEvent {
+    Hello {
+        protocol_version: u16,
+        server_version: String,
+        session_id: Option<uuid::Uuid>,
+    },
+    Snapshot {
+        revision: u64,
+        session: Option<SessionSnapshot>,
+        stream: Option<StreamSnapshot>,
+    },
+    RunStarted {
+        revision: u64,
+        session_id: uuid::Uuid,
+    },
+    StreamUpdated {
+        revision: u64,
+        stream: StreamSnapshot,
+        session: Option<SessionSnapshot>,
+    },
+    SessionStateChanged {
+        revision: u64,
+        session_running: bool,
+        paused: bool,
+        session: Option<SessionSnapshot>,
+    },
+    RunFinished {
+        revision: u64,
+        session_id: Option<uuid::Uuid>,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamSnapshot {
     pub devices: HashMap<String, DeviceData>,
@@ -23,6 +74,17 @@ impl StreamSnapshot {
     pub fn from_server_state(state: &ServerState, max_data_points_override: Option<usize>) -> Self {
         Self {
             devices: state.send_stream(max_data_points_override),
+            session_running: state.get_session_info().is_some(),
+            paused: !state.internal_state,
+        }
+    }
+
+    pub fn from_server_state_with_projection(
+        state: &ServerState,
+        projection: &crate::data_handler::StreamProjectionConfig,
+    ) -> Self {
+        Self {
+            devices: state.send_stream_with_projection(projection),
             session_running: state.get_session_info().is_some(),
             paused: !state.internal_state,
         }
@@ -49,6 +111,7 @@ mod tests {
     use super::*;
     use crate::data_handler::{
         DataSession, Device, Entity, Measurement, MeasurementData, SessionMetadata,
+        StreamProjectionConfig,
     };
     use uuid::Uuid;
 
@@ -57,8 +120,7 @@ mod tests {
             Uuid::new_v4(),
             String::new(),
             "example.rs".to_string(),
-            true,
-            100,
+            StreamProjectionConfig::default(),
         );
 
         state.update_entity(
@@ -153,8 +215,7 @@ mod tests {
             Uuid::new_v4(),
             String::new(),
             "example.rs".to_string(),
-            true,
-            100,
+            StreamProjectionConfig::default(),
         );
         assert!(SessionSnapshot::from_server_state(&state).is_none());
     }

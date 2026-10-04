@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 pub async fn start_tcp_server(
     addr: String,
-    state: Arc<Mutex<ServerState>>,
+    controller: SessionController,
     mut shutdown_rx: broadcast::Receiver<()>,
     shutdown_tx: broadcast::Sender<()>,
 ) -> tokio::io::Result<()> {
@@ -34,9 +34,9 @@ pub async fn start_tcp_server(
 
 
                 let shutdown_tx = shutdown_tx.clone();
-                let state = Arc::clone(&state);
+                let controller = controller.clone();
                 tokio::spawn(async move {
-                    handle_connection(socket, addr, state, shutdown_tx).await;
+                    handle_connection(socket, addr, controller, shutdown_tx).await;
                 });
             },
             _ = shutdown_rx.recv() => {
@@ -52,8 +52,8 @@ pub async fn start_tcp_server(
 async fn handle_connection(
     socket: TcpStream,
     addr: SocketAddr,
-    state: Arc<Mutex<ServerState>>,
-    shutdown_tx: broadcast::Sender<()>,
+    controller: SessionController,
+    _shutdown_tx: broadcast::Sender<()>,
 ) {
     let (reader, mut writer) = socket.into_split();
     let mut reader = BufReader::new(reader);
@@ -74,14 +74,14 @@ async fn handle_connection(
 
                 log::debug!("Raw data stream:{trimmed}");
 
-                if handle_command(trimmed, &mut writer, &state, &shutdown_tx).await {
+                if handle_command(trimmed, &mut writer, &controller).await {
                     if trimmed == "KILL" {
                         break;
                     }
                     continue;
                 }
 
-                if handle_entity(trimmed, &mut writer, &state).await {
+                if handle_entity(trimmed, &mut writer, &controller).await {
                     continue;
                 }
 
@@ -99,15 +99,13 @@ async fn handle_connection(
 async fn handle_command(
     message: &str,
     writer: &mut OwnedWriteHalf,
-    state: &Arc<Mutex<ServerState>>,
-    shutdown_tx: &broadcast::Sender<()>,
+    controller: &SessionController,
 ) -> bool {
     let command = match ServerCommand::parse(message) {
         Ok(command) => command,
         Err(_) => return false,
     };
 
-    let controller = SessionController::new(Arc::clone(state), shutdown_tx.clone());
     let response = match command {
         ServerCommand::GetDatastream => serde_json::to_string(&controller.stream_snapshot(None).await)
             .map_err(|e| format!("Failed to serialize datastream: {e}")),
@@ -137,7 +135,7 @@ async fn handle_command(
 async fn handle_entity(
     message: &str,
     writer: &mut OwnedWriteHalf,
-    state: &Arc<Mutex<ServerState>>,
+    controller: &SessionController,
 ) -> bool {
     if let Ok(mut device) = serde_json::from_str::<Device>(message) {
         let timestamp = vec![create_log_timestamp()];
@@ -148,8 +146,7 @@ async fn handle_entity(
                 .or_insert(timestamp.clone());
         }
         let device_name = device.device_name.clone();
-        let mut state = state.lock().await;
-        state.update_entity(device_name, Entity::Device(device));
+        controller.ingest(device_name, Entity::Device(device)).await;
         let _ = writer.write_all(b"Device measurements recorded\n").await;
         return true;
     }
@@ -157,16 +154,15 @@ async fn handle_entity(
     if let Ok(data_session) = serde_json::from_str::<DataSession>(message) {
         log::info!("Session data processed");
         let session_name = data_session.info.name.clone();
-        let mut state = state.lock().await;
-        state.update_entity(session_name, Entity::Session(data_session));
+        controller.ingest(session_name, Entity::Session(data_session)).await;
         let _ = writer.write_all(b"Session configuration processed\n").await;
         return true;
     }
 
     if let Ok(_) = serde_json::from_str::<Listner>(message) {
         log::debug!("Listener query");
-        let state = state.lock().await;
-        if state.internal_state {
+        let snapshot = controller.stream_snapshot(None).await;
+        if !snapshot.paused {
             let _ = writer.write_all(b"Running\n").await;
         } else {
             let _ = writer.write_all(b"Paused\n").await;

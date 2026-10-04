@@ -137,7 +137,14 @@ subsampling = true # Optional (default: true). Enables LTTB (Largest Triangle Th
 
 allowed_output_dirs = ["/path/to/allowed/dir1", "/path/to/allowed/dir2"] # Optional. Restricts where output files can be written. If omitted, defaults to the current working directory and home directory. Primarily useful when running `rex serve` to constrain remote callers.
 
+allowed_script_dirs = ["/path/to/approved/scripts"] # Optional. Restricts non-loopback HTTP clients to these script roots. Loopback clients remain trusted local users and may run any readable .py, .rs, or .m file. If omitted, defaults to the rex scripts directory below.
+
 theme = "dracula" # Optional (default: "dracula"). Color theme for the TUI. See "TUI Theming" below for all available themes.
+
+[general.stream_projection]
+strategy = "lttb" # "lttb" preserves visual features; "latest" keeps the newest samples.
+single_series_max_points = 500
+multi_series_max_points = 100
 
 [email_server]
 security = true # If set to true, you must provide a username and password.
@@ -379,7 +386,7 @@ current = [
 The file is periodically written during the session (every ~3 seconds) so that data is preserved even if the session crashes. On graceful shutdown, final end timestamps are appended and the file is written one last time.
 
 ## Rex view
-Rex bundles an interactive TUI viewer that can connect to a running `rex` instance either directly via TCP or through a `rex serve` HTTP server. It can be used to remotely monitor, pause/continue, or kill sessions. The TUI also enables plotting any data currently held by the session on an X,Y graph.
+Rex bundles an interactive TUI viewer that connects to the `rex serve` HTTP/WebSocket control plane. It can be used to monitor, pause/continue, kill sessions, and plot the data currently held by the session on an X,Y graph. TCP remains the lightweight protocol through which experiment scripts send measurements; it is no longer a viewer backend.
 
 ```
 ❯ rex view -h
@@ -388,16 +395,16 @@ A commandline DAQ viewer
 Usage: rex view [OPTIONS] <ADDRESS>
 
 Arguments:
-  <ADDRESS>  Address of the running rex instance (e.g. 127.0.0.1:7676 for TCP, or 127.0.0.1:9000 for HTTP)
+  <ADDRESS>  Address of the rex HTTP control plane (e.g. 127.0.0.1:9000)
 
 Options:
-  -b, --backend <BACKEND>  Network backend to use for connecting to the rex instance [default: tcp] [possible values: http, tcp]
+  -b, --backend <BACKEND>  Network backend to use for connecting to the rex instance [default: http] [possible values: http, tcp]
   -h, --help               Print help
   -V, --version            Print version
 ```
 
-- **TCP mode** (`--backend tcp`, the default): Connect directly to the TCP server started by `rex run`. Use the address and port from your `config.toml` `[general].port` (default `127.0.0.1:7676`). Supports full control — monitoring, pause, resume, kill, editing session/device config, loading local config and script files, and starting new local runs.
-- **HTTP mode** (`--backend http`): Connect to a `rex serve` instance. Use the serve address (default `127.0.0.1:9000`). Supports the full feature set including editing session configuration, browsing registered scripts from the server's scripts directory, and starting new runs. When using HTTP, scripts must come from the server's registered [scripts directory](#scripts-directory).
+- **HTTP mode** (the default): Connect to a `rex serve` instance. Use the control-plane address (default `127.0.0.1:9000`). A loopback connection is trusted as a local user, so its TUI can pick any local script file. A non-loopback connection can browse and run only scripts in the server's configured [allowed script roots](#scripts-directory).
+- **TCP mode** (`--backend tcp`): deprecated. It now exits with a migration hint; use the HTTP control plane instead.
 
 ### TUI keybindings
 
@@ -438,11 +445,11 @@ Options:
 
 The TUI allows you to start new sessions without leaving the interface:
 
-1. Press `l` to load a config file (`.toml`) and then a script file (`.py`, `.rs`, `.m`). When connected via HTTP, scripts are fetched from the server's registered [scripts directory](#scripts-directory) instead.
+1. Press `l` to load a config file (`.toml`) and then a script file (`.py`, `.rs`, `.m`). When connected to loopback HTTP, the local file picker is used. A non-loopback HTTP connection instead shows the server's registered [script roots](#scripts-directory).
 2. In the **State** tab, you can view and edit session info and device configuration fields with `e`.
 3. Press `n` to start a new run. A popup lets you configure output directory, loop count, delay, and dry-run mode before confirming.
 
-When connected via TCP the new run is spawned locally. When connected via HTTP the run is dispatched to the `rex serve` instance via the `/run` endpoint.
+New runs are dispatched to `rex serve` via the `/run` endpoint. The server itself decides whether the caller is loopback (trusted local) or remote (allow-listed script only); the UI cannot override that decision.
 
 ### TUI Theming
 
@@ -479,24 +486,32 @@ Each theme provides a consistent semantic color palette (accent, info, success, 
 
 ## Scripts directory
 
-When using `rex serve`, scripts can be registered by placing them in the rex scripts directory:
+When using `rex serve`, remote clients can run only scripts registered in its allowed script roots. If `allowed_script_dirs` is omitted, rex uses this scripts directory:
 - **Linux**: `~/.config/rex/scripts/`
 - **macOS**: `~/Library/Application Support/rex/scripts/`
 
 Rex scans this directory (up to 4 levels deep) for `.py`, `.rs`, and `.m` files. These scripts are then made available through the `/allowed_scripts` API endpoint and in the TUI when connected via HTTP.
 
-This can be overridden by setting the `XDG_CONFIG_HOME` environment variable, in which case scripts are read from `$XDG_CONFIG_HOME/rex/scripts/`.
+Set `general.allowed_script_dirs` to one or more explicit server paths to override that default. The legacy default can also be moved with `XDG_CONFIG_HOME`, in which case it is `$XDG_CONFIG_HOME/rex/scripts/`. Rex scans each root (up to 4 levels deep) for `.py`, `.rs`, and `.m` files. Local loopback clients are intentionally not limited to these roots; bind `rex serve` to loopback unless you explicitly need remote control.
 
 ## Rex Serve
 
 Rex serve allows for remotely starting `rex run` and also provides remote control functionality found in the TUI. This is perfect for integration with more advanced graphical user interfaces.
+
+Direct `rex run` uses the same control-plane contract for the lifetime of its
+run: it binds HTTP/WebSocket to `127.0.0.1:<control-port>` (default `9000`).
+For example, launch `rex run my_script.py`, then use `rex view 127.0.0.1:9000`
+or connect the local browser UI/client. `rex serve` is the long-lived form of
+the same control plane; it owns the listener itself and can be explicitly bound
+to a non-loopback interface when remote access is required.
 
 ```
 ❯ rex serve -h
 A commandline DAQ server
 
 Options:
-  -p, --port <PORT>  Port to listen on for the HTTP API server [default: 9000]
+      --host <HOST>          HTTP/WebSocket bind interface [default: 127.0.0.1]
+  -p, --port <PORT>          Port for the HTTP API and WebSocket control plane [default: 9000]
   -h, --help         Print help
   -V, --version      Print version
 ```

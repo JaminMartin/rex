@@ -1,25 +1,30 @@
 use crate::cli_tool::run_session;
 use crate::cli_tool::{RunArgs, ServeArgs};
-use crate::data_handler::{get_configuration, ServerCommand, SharedSessionController};
+use crate::data_handler::{
+    get_configuration, ClientMessage, ServerCommand, ServerEvent, SharedSessionController,
+    LIVE_PROTOCOL_VERSION,
+};
 use axum::{
-    extract::{Query, State},
+    extract::{ConnectInfo, ws::{Message, WebSocket, WebSocketUpgrade}, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use futures::StreamExt;
 use log::LevelFilter;
 use serde::Deserialize;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tower_http::cors::CorsLayer;
 use walkdir::WalkDir;
 
-use crate::data_handler::configurable_dir_path;
-use tokio::signal::ctrl_c;
 use tokio::sync::broadcast;
 use uuid::Uuid;
+
 async fn get_allowed_output_dirs() -> impl IntoResponse {
     match get_configuration() {
         Ok(config) => {
@@ -41,38 +46,34 @@ async fn get_allowed_output_dirs() -> impl IntoResponse {
             .into_response(),
     }
 }
-fn get_allowed_scripts_dir() -> Result<PathBuf, String> {
-    configurable_dir_path("XDG_CONFIG_HOME", dirs::config_dir)
-        .map(|mut path| {
-            path.push("rex");
-            path.push("scripts");
-            path
-        })
-        .ok_or("Failed to get config directory".to_string())
-}
 async fn get_allowed_scripts_list() -> impl IntoResponse {
-    match get_allowed_scripts_dir() {
-        Ok(base_dir) => {
+    match get_configuration() {
+        Ok(config) => {
+            let base_dirs = config.get_allowed_script_dirs();
             let mut files = Vec::new();
 
-            for entry in WalkDir::new(&base_dir)
-                .max_depth(4)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(ext) = path.extension() {
-                        if ext == "py" || ext == "rs" || ext == "m" {
-                            files.push(path.to_string_lossy().to_string());
+            for base_dir in &base_dirs {
+                for entry in WalkDir::new(base_dir)
+                    .max_depth(4)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(ext) = path.extension() {
+                            if matches!(ext.to_str(), Some("py" | "rs" | "m")) {
+                                files.push(path.to_string_lossy().to_string());
+                            }
                         }
                     }
                 }
             }
 
             Json(serde_json::json!({
-                "base_dir": base_dir.to_string_lossy(),
+                // Keep the legacy field while clients move to `base_dirs`.
+                "base_dir": base_dirs.first().map(|path| path.to_string_lossy().to_string()),
+                "base_dirs": base_dirs.iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>(),
                 "files": files
             }))
             .into_response()
@@ -83,6 +84,31 @@ async fn get_allowed_scripts_list() -> impl IntoResponse {
         )
             .into_response(),
     }
+}
+
+fn is_allowed_script_extension(path: &Path) -> bool {
+    matches!(path.extension().and_then(|ext| ext.to_str()), Some("py" | "rs" | "m"))
+}
+
+/// Validate the path independently of the frontend.  Browser clients can
+/// forge a request, so the control plane is the authority for remote access.
+fn validate_remote_script_path(path: &Path) -> Result<(), String> {
+    if !is_allowed_script_extension(path) {
+        return Err("Script must have a .py, .rs, or .m extension".to_string());
+    }
+    let script = path
+        .canonicalize()
+        .map_err(|error| format!("Cannot resolve script path: {error}"))?;
+    if !script.is_file() {
+        return Err("Script path is not a regular file".to_string());
+    }
+    let config = get_configuration().map_err(|error| format!("Failed to get configuration: {error}"))?;
+    let roots = config.get_allowed_script_dirs();
+    if roots.is_empty() {
+        return Err("No remote script roots are configured".to_string());
+    }
+    let allowed = roots.into_iter().filter_map(|root| root.canonicalize().ok()).any(|root| script.starts_with(root));
+    allowed.then_some(()).ok_or_else(|| "Script must be inside an allowed script directory for remote clients".to_string())
 }
 async fn status() -> Result<&'static str, (StatusCode, String)> {
     Ok("Server is up!")
@@ -158,6 +184,92 @@ async fn resume(State(state): State<AppState>) -> impl IntoResponse {
 async fn kill(State(state): State<AppState>) -> impl IntoResponse {
     fetch(&state, ServerCommand::Kill).await
 }
+
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+    ws.on_upgrade(move |socket| handle_websocket(socket, state))
+}
+
+async fn send_snapshot(
+    socket: &mut WebSocket,
+    controller: Option<crate::data_handler::SessionController>,
+    projection: Option<crate::data_handler::StreamProjectionConfig>,
+) -> Result<(), ()> {
+    let (revision, session, stream) = if let Some(controller) = controller {
+        let revision = controller.revision();
+        let session = controller.session_snapshot().await.ok();
+        let stream = Some(controller.stream_snapshot_with_projection(projection).await);
+        (revision, session, stream)
+    } else {
+        (0, None, None)
+    };
+    let payload = serde_json::to_string(&ServerEvent::Snapshot { revision, session, stream })
+        .map_err(|_| ())?;
+    socket.send(Message::Text(payload.into())).await.map_err(|_| ())
+}
+
+async fn handle_websocket(mut socket: WebSocket, state: AppState) {
+    let mut projection = None;
+    let mut events = state.session_controller.subscribe();
+    let controller = state.session_controller.get();
+    let session_id = if let Some(controller) = controller.as_ref() {
+        Some(controller.session_id().await)
+    } else {
+        None
+    };
+    let hello = ServerEvent::Hello {
+        protocol_version: LIVE_PROTOCOL_VERSION,
+        server_version: env!("CARGO_PKG_VERSION").to_string(),
+        session_id,
+    };
+    let Ok(hello) = serde_json::to_string(&hello) else { return };
+    if socket.send(Message::Text(hello.into())).await.is_err()
+        || send_snapshot(&mut socket, controller, projection.clone()).await.is_err()
+    {
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            incoming = socket.next() => match incoming {
+                Some(Ok(Message::Text(text))) => match serde_json::from_str::<ClientMessage>(&text) {
+                    Ok(ClientMessage::Subscribe { projection: requested }) => {
+                        projection = requested;
+                        if send_snapshot(&mut socket, state.session_controller.get(), projection.clone()).await.is_err() {
+                            return;
+                        }
+                    }
+                    Ok(ClientMessage::Ping) => {}
+                    Err(error) => {
+                        let error = ServerEvent::Error { code: "invalid_client_message".to_string(), message: error.to_string() };
+                        if let Ok(payload) = serde_json::to_string(&error) {
+                            if socket.send(Message::Text(payload.into())).await.is_err() { return; }
+                        }
+                    }
+                },
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                _ => {}
+            },
+            event = events.recv() => match event {
+                Ok(ServerEvent::StreamUpdated { revision, .. }) => {
+                    let Some(controller) = state.session_controller.get() else { continue; };
+                    let stream = controller.stream_snapshot_with_projection(projection.clone()).await;
+                    let session = controller.session_snapshot().await.ok();
+                    let event = ServerEvent::StreamUpdated { revision, stream, session };
+                    let Ok(payload) = serde_json::to_string(&event) else { continue; };
+                    if socket.send(Message::Text(payload.into())).await.is_err() { return; }
+                }
+                Ok(event) => {
+                    let Ok(payload) = serde_json::to_string(&event) else { continue; };
+                    if socket.send(Message::Text(payload.into())).await.is_err() { return; }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if send_snapshot(&mut socket, state.session_controller.get(), projection.clone()).await.is_err() { return; }
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+}
 #[derive(Serialize)]
 struct RunResponse {
     id: String,
@@ -173,9 +285,13 @@ struct AppState {
 }
 async fn run_handler(
     State(state): State<AppState>,
-
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(args): Json<RunArgs>,
 ) -> Result<Json<RunResponse>, (StatusCode, String)> {
+    if !peer.ip().is_loopback() {
+        validate_remote_script_path(&args.path)
+            .map_err(|error| (StatusCode::FORBIDDEN, error))?;
+    }
     let shutdown_tx = state.shutdown_tx.clone();
     let log_level = state.log_level;
     let uuid = Uuid::new_v4();
@@ -216,17 +332,20 @@ async fn check_session(State(state): State<AppState>) -> impl IntoResponse {
         StatusCode::NO_CONTENT
     }
 }
-pub async fn run_server(
-    args: ServeArgs,
-    shutting_down: Arc<AtomicBool>,
+pub async fn run_control_plane(
+    host: String,
+    port: u32,
     shutdown_tx: broadcast::Sender<()>,
+    mut control_shutdown_rx: broadcast::Receiver<()>,
     log_level: LevelFilter,
+    session_controller: SharedSessionController,
+    running: Arc<AtomicBool>,
 ) {
     let state = AppState {
         shutdown_tx: shutdown_tx.clone(),
         log_level,
-        running: Arc::new(AtomicBool::new(false)),
-        session_controller: SharedSessionController::default(),
+        running,
+        session_controller,
     };
 
     let app = Router::new()
@@ -240,30 +359,45 @@ pub async fn run_server(
         .route("/status_check", get(check_session))
         .route("/allowed_scripts", get(get_allowed_scripts_list))
         .route("/allowed_output_dirs", get(get_allowed_output_dirs))
+        .route("/ws", get(ws_handler))
+        .layer(CorsLayer::permissive())
         .with_state(state);
 
-    log::info!("Rex Server listening on http://0.0.0.0:{}", args.port);
-    let address = format!("0.0.0.0:{}", args.port);
-    let listener = tokio::net::TcpListener::bind(address.clone())
-        .await
-        .unwrap();
-
-    let server_shutting_down_clone = shutting_down.clone();
-    let (shutdown_server_tx, _) = broadcast::channel(1);
-    let mut server_shutdown = shutdown_server_tx.subscribe();
-    tokio::spawn(async move {
-        if let Ok(()) = ctrl_c().await {
-            if !server_shutting_down_clone.load(Ordering::SeqCst) {
-                server_shutting_down_clone.store(true, Ordering::SeqCst);
-                if shutdown_server_tx.send(()).is_err() {}
-            }
+    let address = format!("{host}:{port}");
+    log::info!("Rex Server listening on http://{address}");
+    let listener = match tokio::net::TcpListener::bind(&address).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            log::error!("Could not bind Rex control plane at http://{address}: {error}");
+            return;
         }
-    });
-    axum::serve(listener, app)
+    };
+
+    if let Err(error) = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
-            server_shutdown.recv().await.ok();
-            println!("Shutting down server...");
+            control_shutdown_rx.recv().await.ok();
         })
         .await
-        .unwrap();
+    {
+        log::error!("Rex control plane stopped unexpectedly: {error}");
+    }
+}
+
+pub async fn run_server(
+    args: ServeArgs,
+    _shutting_down: Arc<AtomicBool>,
+    shutdown_tx: broadcast::Sender<()>,
+    log_level: LevelFilter,
+) {
+    let (session_shutdown_tx, _) = broadcast::channel(1);
+    run_control_plane(
+        args.host,
+        args.port,
+        session_shutdown_tx,
+        shutdown_tx.subscribe(),
+        log_level,
+        SharedSessionController::default(),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .await;
 }

@@ -76,6 +76,7 @@ async fn send_test_device_data(addr: SocketAddr) -> tokio::io::Result<()> {
 fn test_tcp_server_basic_connection() {
     let state = Arc::new(Mutex::new(ServerState::default()));
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    let controller = SessionController::new(Arc::clone(&state), shutdown_tx.clone());
 
     let addr = "127.0.0.1:7676".to_string();
     let addr_clone = addr.clone();
@@ -85,7 +86,7 @@ fn test_tcp_server_basic_connection() {
 
         rt.block_on(start_tcp_server(
             addr_clone,
-            state,
+            controller,
             shutdown_rx,
             shutdown_tx_clone,
         ))

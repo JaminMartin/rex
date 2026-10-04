@@ -1,6 +1,5 @@
 use crate::data_handler::configurable_dir_path;
 use crate::data_handler::frontend_contract::SessionSnapshot;
-use crate::data_handler::transport::TransportType;
 use crate::data_handler::{SessionInfo, SessionMetadata};
 
 use crate::tui_tool::theme::AppTheme;
@@ -75,6 +74,7 @@ pub enum StateMode {
 struct Config {
     #[serde(alias = "experiment")]
     session: Option<Session>,
+    #[serde(default)]
     device: HashMap<String, DeviceConfig>,
 }
 
@@ -210,7 +210,7 @@ impl StateTab {
     pub fn handle_file_picker_key(
         &mut self,
         key: crossterm::event::KeyCode,
-        transport: TransportType,
+        remote: bool,
     ) -> bool {
         if let Some(ref mut picker) = self.file_picker {
             match key {
@@ -254,15 +254,20 @@ impl StateTab {
                     if let Some(selected) = picker.get_selected() {
                         match self.mode {
                             StateMode::PickingConfig => {
-                                self.loaded_config_path = Some(selected.clone());
                                 log::info!("Selected config: {:?}", selected);
                                 if let Err(e) = self.load_config_from_file(&selected) {
                                     log::error!("Failed to load config: {}", e);
+                                    // Keep the picker open so an accidental selection (for
+                                    // example rex's own [general] runtime config) cannot be
+                                    // followed by a misleading "Ready to run" state.
+                                    return false;
                                 }
+
+                                self.loaded_config_path = Some(selected.clone());
 
                                 self.file_picker = None;
 
-                                if transport == TransportType::Http {
+                                if remote {
                                     self.mode = StateMode::FetchingScripts;
                                     return true;
                                 } else {
@@ -310,6 +315,15 @@ impl StateTab {
     fn load_config_from_file(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let contents = std::fs::read_to_string(path)?;
         let config: Config = toml::from_str(&contents)?;
+
+        if config.session.is_none() && config.device.is_empty() {
+            return Err(
+                "This is a rex runtime configuration ([general]), not a session configuration. \
+                 Select a TOML file with [session] (or [experiment]) and [device.<name>] entries. \
+                 Use REX_CONFIG_PATH to choose rex's runtime configuration."
+                    .into(),
+            );
+        }
 
         if let Some(session) = config.session {
             self.session_info = Some(session.info);
@@ -857,6 +871,7 @@ impl StateTab {
             delay: self.run_args_delay,
             loops: self.run_args_loops,
             interactive: false,
+            control_port: 9000,
             port: None,
             meta_json: None,
         })
@@ -913,6 +928,7 @@ impl StateTab {
             delay: self.run_args_delay,
             loops: self.run_args_loops,
             interactive: false,
+            control_port: 9000,
             port: None,
             meta_json: None,
         })
@@ -1873,6 +1889,22 @@ Exit = "side"
         assert!(matches!(ihr.get("slits"), Some(Value::Table(_))));
         assert!(matches!(ihr.get("mirrors"), Some(Value::Table(_))));
         assert_eq!(ihr["forced_initialisation"], Value::Boolean(true));
+    }
+
+    #[test]
+    fn test_runtime_config_is_not_accepted_as_session_config() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "[general]\nport = \"7676\"\ninterpreter = \"rust-script\"\n",
+        )
+        .unwrap();
+
+        let mut tab = StateTab::new(false);
+        let error = tab.load_config_from_file(file.path()).unwrap_err();
+        assert!(error.to_string().contains("runtime configuration"));
+        assert!(tab.session_info.is_none());
+        assert!(tab.device_configs.is_empty());
     }
 
     #[test]

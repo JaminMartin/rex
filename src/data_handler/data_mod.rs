@@ -32,7 +32,60 @@ pub struct GeneralConfig {
     pub subsampling: Option<bool>,
     pub max_data_points: Option<usize>,
     pub allowed_output_dirs: Option<Vec<String>>,
+    /// Script roots exposed to non-loopback HTTP clients. Loopback clients are
+    /// trusted local users and may select any readable script file.
+    pub allowed_script_dirs: Option<Vec<String>>,
     pub theme: Option<String>,
+    /// Controls the server-side view sent to interactive clients.  The legacy
+    /// `subsampling` and `max_data_points` fields are used when this is absent.
+    pub stream_projection: Option<StreamProjectionConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionStrategy {
+    Latest,
+    Lttb,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamProjectionConfig {
+    pub strategy: ProjectionStrategy,
+    pub single_series_max_points: usize,
+    pub multi_series_max_points: usize,
+}
+
+impl Default for StreamProjectionConfig {
+    fn default() -> Self {
+        Self {
+            strategy: ProjectionStrategy::Lttb,
+            single_series_max_points: 100,
+            multi_series_max_points: 100,
+        }
+    }
+}
+
+impl GeneralConfig {
+    pub fn stream_projection_config(&self) -> StreamProjectionConfig {
+        if let Some(config) = &self.stream_projection {
+            return StreamProjectionConfig {
+                strategy: config.strategy.clone(),
+                single_series_max_points: config.single_series_max_points.max(1),
+                multi_series_max_points: config.multi_series_max_points.max(1),
+            };
+        }
+
+        let max_points = self.max_data_points.unwrap_or(100).max(1);
+        StreamProjectionConfig {
+            strategy: if self.subsampling.unwrap_or(true) {
+                ProjectionStrategy::Lttb
+            } else {
+                ProjectionStrategy::Latest
+            },
+            single_series_max_points: max_points,
+            multi_series_max_points: max_points,
+        }
+    }
 }
 
 fn apply_config_env_overrides(config: &mut Configuration) {
@@ -59,6 +112,7 @@ fn apply_config_env_overrides(config: &mut Configuration) {
             Ok(value) => config.general.subsampling = Some(value),
             Err(e) => log::warn!("Ignoring invalid REX_SUBSAMPLING value: {e}"),
         }
+        config.general.stream_projection = None;
     }
 
     if let Ok(max_data_points) = env::var("REX_MAX_DATA_POINTS") {
@@ -67,6 +121,7 @@ fn apply_config_env_overrides(config: &mut Configuration) {
             Ok(_) => log::warn!("Ignoring invalid REX_MAX_DATA_POINTS value: must be > 0"),
             Err(e) => log::warn!("Ignoring invalid REX_MAX_DATA_POINTS value: {e}"),
         }
+        config.general.stream_projection = None;
     }
 }
 impl Configuration {
@@ -82,6 +137,25 @@ impl Configuration {
                     defaults.push(home);
                 }
                 defaults
+            })
+    }
+
+    /// Return the script roots available to remote HTTP clients.  Preserve the
+    /// original XDG location as the default so existing installations remain
+    /// usable until they opt into an explicit allow-list.
+    pub fn get_allowed_script_dirs(&self) -> Vec<PathBuf> {
+        self.general
+            .allowed_script_dirs
+            .as_ref()
+            .map(|dirs| dirs.iter().map(PathBuf::from).collect())
+            .unwrap_or_else(|| {
+                configurable_dir_path("XDG_CONFIG_HOME", dirs::config_dir)
+                    .map(|mut path| {
+                        path.push("rex");
+                        path.push("scripts");
+                        vec![path]
+                    })
+                    .unwrap_or_default()
             })
     }
 }
@@ -403,7 +477,11 @@ impl Device {
         }
     }
 
-    fn latest_measurements_truncated(&self, max_measurements: usize) -> HashMap<String, Vec<f64>> {
+    fn latest_measurements_truncated(
+        &self,
+        single_max_measurements: usize,
+        multi_max_measurements: usize,
+    ) -> HashMap<String, Vec<f64>> {
         let truncated_measurements = self
             .measurements
             .iter()
@@ -412,7 +490,7 @@ impl Device {
                     MeasurementData::Single(single_values) => single_values
                         .iter()
                         .rev()
-                        .take(max_measurements)
+                        .take(single_max_measurements)
                         .cloned()
                         .collect::<Vec<f64>>()
                         .into_iter()
@@ -421,9 +499,9 @@ impl Device {
                     MeasurementData::Multi(multi_values) => {
                         if let Some(latest_array) = multi_values.last() {
                             match latest_array.len() {
-                                0..=100 => latest_array.clone(),
+                                len if len <= multi_max_measurements => latest_array.clone(),
                                 _ => {
-                                    let chunk_size = div_ceil(latest_array.len(), 100);
+                                    let chunk_size = div_ceil(latest_array.len(), multi_max_measurements);
                                     latest_array
                                         .chunks(chunk_size)
                                         .map(|chunk| chunk.iter().sum::<f64>() / chunk.len() as f64)
@@ -471,7 +549,11 @@ impl Device {
             })
             .collect()
     }
-    fn latest_data_lttb(&self, max_measurements: usize) -> DeviceData {
+    fn latest_data_lttb(
+        &self,
+        single_max_measurements: usize,
+        multi_max_measurements: usize,
+    ) -> DeviceData {
         use lttb::{lttb, DataPoint};
 
         let mut combined = HashMap::new();
@@ -500,8 +582,8 @@ impl Device {
                                 })
                                 .collect();
 
-                            if data_points.len() > max_measurements {
-                                let downsampled = lttb(data_points, max_measurements);
+                            if data_points.len() > single_max_measurements {
+                                let downsampled = lttb(data_points, single_max_measurements);
 
                                 let y_values: Vec<f64> =
                                     downsampled.iter().map(|dp| dp.y).collect();
@@ -537,14 +619,14 @@ impl Device {
                 }
                 MeasurementData::Multi(multi_values) => {
                     if let Some(latest_array) = multi_values.last() {
-                        if latest_array.len() > 100 {
+                        if latest_array.len() > multi_max_measurements {
                             let data_points: Vec<DataPoint> = latest_array
                                 .iter()
                                 .enumerate()
                                 .map(|(i, &y)| DataPoint::new(i as f64, y))
                                 .collect();
 
-                            let downsampled = lttb(data_points, 100);
+                            let downsampled = lttb(data_points, multi_max_measurements);
                             let y_values: Vec<f64> = downsampled.iter().map(|dp| dp.y).collect();
 
                             combined.insert(key.clone(), y_values);
@@ -561,13 +643,19 @@ impl Device {
             measurements: combined,
         }
     }
-    fn latest_data_truncated(&self, max_measurements: usize, subsampling: bool) -> DeviceData {
-        let use_lttb = subsampling;
-        if use_lttb {
-            self.latest_data_lttb(max_measurements)
+    fn latest_data_projected(&self, projection: &StreamProjectionConfig) -> DeviceData {
+        if projection.strategy == ProjectionStrategy::Lttb {
+            self.latest_data_lttb(
+                projection.single_series_max_points,
+                projection.multi_series_max_points,
+            )
         } else {
-            let mut combined = self.latest_measurements_truncated(max_measurements);
-            let timestamps_truncated = self.latest_timestamps_truncated(max_measurements);
+            let mut combined = self.latest_measurements_truncated(
+                projection.single_series_max_points,
+                projection.multi_series_max_points,
+            );
+            let timestamps_truncated =
+                self.latest_timestamps_truncated(projection.single_series_max_points);
             combined.extend(timestamps_truncated);
             DeviceData {
                 device_name: self.device_name.clone(),
@@ -689,8 +777,7 @@ pub struct ServerState {
     pub entities: HashMap<String, Entity>,
     pub internal_state: bool,
     pub retention: bool,
-    pub subsampling: bool,
-    pub max_data_points: usize,
+    pub stream_projection: StreamProjectionConfig,
     pub uuid: Uuid,
     pub external_metadata: Option<HashMap<String, Value>>,
     pub run_file: String,
@@ -707,16 +794,14 @@ impl ServerState {
         uuid: Uuid,
         external_metadata: String,
         run_file: String,
-        subsampling: bool,
-        max_data_points: usize,
+        stream_projection: StreamProjectionConfig,
     ) -> Self {
         let external_metadata = parse_external_metadata(external_metadata);
         ServerState {
             entities: HashMap::new(),
             internal_state: true,
             retention: true,
-            subsampling: subsampling,
-            max_data_points,
+            stream_projection,
             uuid,
             external_metadata,
             run_file,
@@ -1107,14 +1192,25 @@ impl ServerState {
     }
 
     pub fn send_stream(&self, max_data_points_override: Option<usize>) -> HashMap<String, DeviceData> {
-        let max_data_points = max_data_points_override.unwrap_or(self.max_data_points);
+        let mut projection = self.stream_projection.clone();
+        if let Some(max_data_points) = max_data_points_override.filter(|value| *value > 0) {
+            projection.single_series_max_points = max_data_points;
+            projection.multi_series_max_points = max_data_points;
+        }
+        self.send_stream_with_projection(&projection)
+    }
+
+    pub fn send_stream_with_projection(
+        &self,
+        projection: &StreamProjectionConfig,
+    ) -> HashMap<String, DeviceData> {
         let mut stream_contents = HashMap::new();
         for entity in self.entities.values() {
             match entity {
                 Entity::Device(device) => {
                     stream_contents.insert(
                         device.device_name.clone(),
-                        device.latest_data_truncated(max_data_points, self.subsampling),
+                        device.latest_data_projected(projection),
                     );
                 }
                 Entity::Session(_session) => {}
@@ -1129,7 +1225,12 @@ impl Default for ServerState {
         let uuid = Uuid::new_v4();
         let external_metadata = "".to_string();
         let runfile = "".to_string();
-        Self::new(uuid, external_metadata, runfile, true, 100)
+        Self::new(
+            uuid,
+            external_metadata,
+            runfile,
+            StreamProjectionConfig::default(),
+        )
     }
 }
 pub fn sanitize_filename(name: String) -> String {
@@ -1199,21 +1300,28 @@ pub fn get_configuration() -> Result<Configuration, String> {
             return Err(res.to_string());
         }
     };
-    let config_contents = fs::read_to_string(conf);
+    let config_contents = fs::read_to_string(&conf);
 
     let contents = match config_contents {
         Ok(contents) => toml::from_str(&contents),
         Err(e) => {
-            log::error!("Could not read config.toml file, raised the following error: {e}");
-            return Err(e.to_string());
+            let message = format!(
+                "Could not read rex configuration at {}: {e}",
+                conf.display()
+            );
+            log::error!("{message}");
+            return Err(message);
         }
     };
     let mut rex_configuration: Configuration = match contents {
         Ok(config) => config,
         Err(e) => {
-            log::error!("Could not read config.toml file, raised the following error: {e}");
-
-            return Err(e.to_string());
+            let message = format!(
+                "Could not parse rex configuration at {}: {e}",
+                conf.display()
+            );
+            log::error!("{message}");
+            return Err(message);
         }
     };
 
@@ -1293,6 +1401,7 @@ mod tests {
             env::remove_var("REX_INTERPRETER");
             env::remove_var("REX_THEME");
             env::remove_var("REX_SUBSAMPLING");
+            env::remove_var("REX_MAX_DATA_POINTS");
         }
     }
 
@@ -1375,6 +1484,34 @@ theme = "dracula"
         assert_eq!(config.general.subsampling, Some(false));
 
         clear_config_env_vars();
+    }
+
+    #[test]
+    fn test_stream_projection_config_prefers_explicit_limits() {
+        let config = GeneralConfig {
+            port: "7676".to_string(),
+            interpreter: "python3".to_string(),
+            validations: None,
+            subsampling: Some(false),
+            max_data_points: Some(10),
+            allowed_output_dirs: None,
+            allowed_script_dirs: None,
+            theme: None,
+            stream_projection: Some(StreamProjectionConfig {
+                strategy: ProjectionStrategy::Lttb,
+                single_series_max_points: 250,
+                multi_series_max_points: 25,
+            }),
+        };
+
+        assert_eq!(
+            config.stream_projection_config(),
+            StreamProjectionConfig {
+                strategy: ProjectionStrategy::Lttb,
+                single_series_max_points: 250,
+                multi_series_max_points: 25,
+            }
+        );
     }
 
     #[test]

@@ -47,6 +47,18 @@ impl HTTPTransport {
         let mut inner = self.inner.lock().await;
         inner.max_data_points_override = max_data_points.filter(|value| *value > 0);
     }
+    /// Distinguishes an ended local control plane from a live server rejecting
+    /// an individual `/run` request.
+    pub async fn is_control_plane_reachable(&self) -> bool {
+        let inner = self.inner.lock().await;
+        inner
+            .client
+            .get(&inner.base_url)
+            .send()
+            .await
+            .map(|response| response.status().is_success())
+            .unwrap_or(false)
+    }
     pub async fn get_allowed_output_dirs(
         &self,
     ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send>> {

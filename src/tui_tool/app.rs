@@ -6,6 +6,7 @@ use crate::tui_tool::tabs::{chart::ChartTab, state::StateTab};
 use crate::tui_tool::theme::AppTheme;
 
 use ratatui::widgets::ListState;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,6 +81,8 @@ pub struct App<T: Transport> {
     pub in_rerun: bool,
     pub theme: AppTheme,
     pub max_data_points_override: Option<usize>,
+    last_poll: Option<Instant>,
+    poll_in_flight: bool,
 }
 
 impl<T: Transport> App<T> {
@@ -121,7 +124,36 @@ impl<T: Transport> App<T> {
             in_rerun: false,
             theme,
             max_data_points_override: None,
+            last_poll: None,
+            poll_in_flight: false,
         }
+    }
+
+    /// Keep keyboard/render ticks responsive without issuing a network request
+    /// for each tick. A disconnected control plane retries slowly and quietly.
+    pub fn begin_poll(&mut self, transport_type: crate::data_handler::transport::TransportType) -> bool {
+        if self.poll_in_flight {
+            return false;
+        }
+        let interval = if !self.connection_status {
+            Duration::from_secs(1)
+        } else if transport_type == crate::data_handler::transport::TransportType::WebSocket {
+            // WebSocket reads are local cache reads, not network polls. Match
+            // the TUI's render tick so live updates feel immediate.
+            Duration::from_millis(100)
+        } else {
+            Duration::from_millis(350)
+        };
+        if self.last_poll.is_some_and(|last| last.elapsed() < interval) {
+            return false;
+        }
+        self.last_poll = Some(Instant::now());
+        self.poll_in_flight = true;
+        true
+    }
+
+    pub fn finish_poll(&mut self) {
+        self.poll_in_flight = false;
     }
 
     pub fn clear_chart_state(&mut self) {

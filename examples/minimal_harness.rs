@@ -44,7 +44,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session_response = send_message(&mut stream, &session.to_string())?;
     eprintln!("session -> {session_response}");
 
-    for step in 0..20 {
+    // Five minutes at the existing 1.5 s cadence: long enough to attach the
+    // TUI/web viewer, exercise pause/resume, and inspect live streaming.
+    for step in 0..200 {
         let x = step as f64 * 0.5;
         let y = x.sin();
         let trace: Vec<f64> = (0..256)

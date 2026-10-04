@@ -1,5 +1,6 @@
 use crate::server::http_transport::HTTPTransport;
 use crate::tcp_handler::TCPTransport;
+use crate::server::ws_transport::WsTransport;
 use async_trait::async_trait;
 
 #[async_trait]
@@ -26,12 +27,14 @@ pub trait Transport: Clone + Send + Sync + 'static {
 pub enum TransportType {
     Http,
     Tcp,
+    WebSocket,
 }
 
 #[derive(Clone)]
 pub enum TransportImpl {
     Http(HTTPTransport),
     Tcp(TCPTransport),
+    WebSocket(WsTransport),
 }
 
 #[async_trait]
@@ -43,6 +46,7 @@ impl Transport for TransportImpl {
         match self {
             TransportImpl::Http(t) => t.send_command(command).await,
             TransportImpl::Tcp(t) => t.send_command(command).await,
+            TransportImpl::WebSocket(t) => t.send_command(command).await,
         }
     }
 
@@ -50,6 +54,7 @@ impl Transport for TransportImpl {
         match self {
             TransportImpl::Http(t) => t.is_connected(),
             TransportImpl::Tcp(t) => t.is_connected(),
+            TransportImpl::WebSocket(t) => t.is_connected(),
         }
     }
 
@@ -57,6 +62,7 @@ impl Transport for TransportImpl {
         match self {
             TransportImpl::Http(t) => t.ensure_connection().await,
             TransportImpl::Tcp(t) => t.ensure_connection().await,
+            TransportImpl::WebSocket(t) => t.ensure_connection().await,
         }
     }
 
@@ -64,6 +70,7 @@ impl Transport for TransportImpl {
         match self {
             TransportImpl::Http(t) => t.disconnect().await,
             TransportImpl::Tcp(t) => t.disconnect().await,
+            TransportImpl::WebSocket(t) => t.disconnect().await,
         }
     }
 
@@ -71,6 +78,7 @@ impl Transport for TransportImpl {
         match self {
             TransportImpl::Http(t) => t.transport_type(),
             TransportImpl::Tcp(t) => t.transport_type(),
+            TransportImpl::WebSocket(t) => t.transport_type(),
         }
     }
 
@@ -81,6 +89,7 @@ impl Transport for TransportImpl {
         match self {
             TransportImpl::Http(t) => t.rerun(args).await,
             TransportImpl::Tcp(t) => t.rerun(args).await,
+            TransportImpl::WebSocket(t) => t.rerun(args).await,
         }
     }
 
@@ -88,6 +97,7 @@ impl Transport for TransportImpl {
         match self {
             TransportImpl::Http(t) => t.as_any(),
             TransportImpl::Tcp(t) => t.as_any(),
+            TransportImpl::WebSocket(t) => t.as_any(),
         }
     }
 
@@ -95,6 +105,7 @@ impl Transport for TransportImpl {
         match self {
             TransportImpl::Http(t) => t.as_any_mut(),
             TransportImpl::Tcp(t) => t.as_any_mut(),
+            TransportImpl::WebSocket(t) => t.as_any_mut(),
         }
     }
 }

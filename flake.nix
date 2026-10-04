@@ -24,7 +24,9 @@
           extensions = [
             "rust-src"
             "rust-analyzer"
+            "rust-std"
           ];
+          targets = [ "wasm32-unknown-unknown" ];
         };
         # Platform-specific packages
         linuxPackages = pkgs.lib.optionals pkgs.stdenv.isLinux [
@@ -46,6 +48,8 @@
             pkgs.python313
             pkgs.uv
             pkgs.maturin
+            pkgs.binaryen
+            pkgs.dart-sass
             pkgs.zlib
             pkgs.stdenv.cc.cc.lib
           ]

@@ -99,11 +99,49 @@ jobs:
           name: wheels-sdist
           path: dist
 
+  binaries:
+    name: Build rex binary (${{ matrix.asset_name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-13
+            asset_name: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-14
+            asset_name: aarch64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            asset_name: x86_64-pc-windows-msvc
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build release binary
+        run: cargo build --locked --release --bin rex
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        run: tar -C target/release -czf rex-${{ github.ref_name }}-${{ matrix.asset_name }}.tar.gz rex
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path target/release/rex.exe -DestinationPath rex-${{ github.ref_name }}-${{ matrix.asset_name }}.zip
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.asset_name }}
+          path: rex-${{ github.ref_name }}-${{ matrix.asset_name }}.${{ matrix.archive }}
+
   release:
     name: Release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, windows, macos, sdist]
+    needs: [linux, windows, macos, sdist, binaries]
     steps:
       - uses: actions/checkout@v4
 
@@ -117,6 +155,16 @@ jobs:
           pattern: wheels-*
           path: dist
           merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create binary checksums
+        working-directory: dist
+        run: sha256sum rex-*.tar.gz rex-*.zip > SHA256SUMS
 
       - name: Publish to PyPI with UV
         if: >-
@@ -143,7 +191,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/*
+          files: |
+            dist/*
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           draft: false
